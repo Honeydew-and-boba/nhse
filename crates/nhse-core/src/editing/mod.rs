@@ -2,4 +2,5 @@
 pub mod fieldtools;
 pub mod formats;
 pub mod itemparse;
+pub mod itemsets;
 pub mod villagers;

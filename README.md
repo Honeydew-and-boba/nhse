@@ -3,7 +3,8 @@ NHSE
 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 
 Save editor for **Animal Crossing: New Horizons**, rewritten in Rust with a native
-[Tauri](https://tauri.app) desktop app. It runs natively on Apple Silicon Macs.
+[Tauri](https://tauri.app) desktop app. It runs natively on Apple Silicon Macs, and as a homebrew
+app on the **Nintendo Switch 2**.
 
 It edits save data dumped from the Nintendo Switch. Bring your own save: the app does not dump it from your console.
 
@@ -20,6 +21,15 @@ It edits save data dumped from the Nintendo Switch. Bring your own save: the app
 4. Open NHSE and choose your save folder (the one containing `main.dat`) or a `.zip` of it.
 
 Optional: **Settings → Item images** downloads a community pack (~90 MB) with a picture for every item.
+
+## Nintendo Switch 2 (homebrew)
+
+`nhse.nro` edits the game's save right on the console: pick a user, edit, press **+** to save.
+Every save is backed up to the SD card first, and the game's save is only changed by a single
+commit at the end. It covers residents (Bells, Nook Miles, pockets, storage, recipes, catalog,
+reactions) and island tools (turnips, villagers moving out, museum, weeds, flowers, recycle bin).
+Copy it to `/switch/` on the SD card. See [`switch/README.md`](switch/README.md) for details and
+how to build it with [ounce-devkit](https://github.com/ouncebrew/ounce-devkit).
 
 ## Features
 
@@ -60,6 +70,7 @@ Layout:
 
 - `crates/nhse-core`: save format library (encryption, hashes, revisions, data structures, game data, map and editing tools).
 - `src-tauri`: desktop backend (commands, backups, image protocol).
+- `crates/nhse-switch` and `switch`: the Switch 2 homebrew app (see `switch/README.md`).
 - `src`: React + TypeScript user interface.
 
 ## Other

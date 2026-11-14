@@ -171,7 +171,7 @@ impl SaveSource {
                 }
                 w.finish()?;
             }
-            if let Err(e) = fs::rename(&tmp, &*path) {
+            if let Err(e) = rename_replace(&tmp, path) {
                 let _ = fs::remove_file(&tmp);
                 return Err(e.into());
             }
@@ -231,8 +231,21 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
         f.write_all(data)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path).map_err(|e| {
+    rename_replace(&tmp, path).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         Error::Io(e)
     })
+}
+
+/// Renames `from` onto `to`, replacing `to`. Some file systems (the Switch's SD card and save
+/// data) cannot rename onto an existing file; the data is complete in `from` at this point, so
+/// the old file is removed and the rename retried.
+fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::rename(from, to) {
+        Err(_) if to.is_file() => {
+            fs::remove_file(to)?;
+            fs::rename(from, to)
+        }
+        r => r,
+    }
 }

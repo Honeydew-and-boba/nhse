@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nhse-core", "src-tauri"]
+members = ["crates/nhse-core", "crates/nhse-switch", "src-tauri"]
 
 [workspace.package]
 version = "4.0.0"
