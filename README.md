@@ -10,9 +10,9 @@ It edits save data dumped from the Nintendo Switch. Bring your own save: the app
 
 ## Install (macOS, Apple Silicon)
 
-1. Download the latest `.dmg` from the
-   [**NHSE (Rust/Tauri)** pre-release](https://github.com/cedricroulof/nhse/releases/tag/nightly-rust)
-   (or from the *Build macOS app* workflow artifacts).
+1. Download the `.dmg` from the [**latest release**](https://github.com/cedricroulof/nhse/releases/latest)
+   (or a build of the latest code from the
+   [`nightly-master` pre-release](https://github.com/cedricroulof/nhse/releases/tag/nightly-master)).
 2. Open it and drag **NHSE** to **Applications**.
 3. The app is ad-hoc signed, not notarized, so macOS blocks the first launch. Run this once in Terminal:
    ```sh
@@ -28,7 +28,8 @@ Optional: **Settings → Item images** downloads a community pack (~90 MB) with 
 Every save is backed up to the SD card first, and the game's save is only changed by a single
 commit at the end. It covers residents (Bells, Nook Miles, pockets, storage, recipes, catalog,
 reactions) and island tools (turnips, villagers moving out, museum, weeds, flowers, recycle bin).
-Copy it to `/switch/` on the SD card. See [`switch/README.md`](switch/README.md) for details and
+Download `nhse.nro` from the [**latest release**](https://github.com/cedricroulof/nhse/releases/latest)
+and copy it to `/switch/` on the SD card. See [`switch/README.md`](switch/README.md) for details and
 how to build it with [ounce-devkit](https://github.com/ouncebrew/ounce-devkit).
 
 ## Features
@@ -54,6 +55,12 @@ Save reading and writing was cross-checked byte for byte against the original C#
 - Clearer map colours for shores, cliffs, waterfalls and elevation.
 - Flower gene and watering editor.
 - ZIP saves where the files sit inside a sub-folder now open.
+
+## Releases
+
+Run the **Release** workflow from the Actions tab with a tag such as `v4.0.1` (or push the tag).
+The tag must match the version in `Cargo.toml`. It runs the tests, builds the macOS app and
+`nhse.nro` from the same commit, and publishes them together.
 
 ## Building from source
 

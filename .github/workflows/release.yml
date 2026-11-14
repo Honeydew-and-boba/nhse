@@ -1,0 +1,165 @@
+name: Release
+
+# Builds every app from one commit and publishes them together as a release:
+# the macOS app (.dmg and .app.zip) and the Switch 2 homebrew app (nhse.nro).
+#
+# Start it from the Actions tab (Run workflow, with the tag, e.g. v4.0.0), or push a v* tag.
+# The tag must match the version in Cargo.toml.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v4.0.0 (must match the version in Cargo.toml)"
+        required: true
+
+# Read-only by default; only the publish job may write (it creates the release).
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  OUNCE_DEVKIT_COMMIT: f3478152dc553a104dd991efca4bde0c6e7cfe3e
+  OUNCE_DEVKIT_VERSION: "20261114"
+
+jobs:
+  check:
+    name: Version and tests
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Check the tag against Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$TAG" != "v$version" ]; then
+            echo "The tag $TAG does not match the version in Cargo.toml (v$version)." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test -p nhse-core -p nhse-switch --release
+
+  macos:
+    name: macOS (Apple Silicon)
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+      - run: npm ci --ignore-scripts
+      - run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg
+      - name: Collect
+        run: |
+          mkdir -p out
+          cp target/aarch64-apple-darwin/release/bundle/dmg/*.dmg out/
+          cd target/aarch64-apple-darwin/release/bundle/macos
+          ditto -c -k --keepParent NHSE.app ../../../../../out/NHSE-macOS-arm64.app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+          if-no-files-found: error
+
+  switch2:
+    name: Switch 2 (nhse.nro)
+    needs: check
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:20260219
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl ca-certificates build-essential
+      - name: Install ounce-devkit
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/install.sh \
+            "https://raw.githubusercontent.com/ouncebrew/ounce-devkit/${OUNCE_DEVKIT_COMMIT}/install.sh"
+          sh /tmp/install.sh "${OUNCE_DEVKIT_VERSION}"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: rust-src
+      - run: make -C switch -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switch2
+          path: switch/nhse.nro
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: [check, macos, switch2]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: NHSE ${{ needs.check.outputs.version }}
+          make_latest: true
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            Save editor for **Animal Crossing: New Horizons**, rewritten in Rust: a desktop app for Apple Silicon Macs and a homebrew app for the **Nintendo Switch 2**. Both read and write saves with the same library.
+
+            ## Downloads
+
+            | File | For |
+            | --- | --- |
+            | `NHSE_${{ needs.check.outputs.version }}_aarch64.dmg` | macOS, Apple Silicon |
+            | `NHSE-macOS-arm64.app.zip` | macOS, the app without the disk image |
+            | `nhse.nro` | Nintendo Switch 2 (homebrew) |
+
+            ## macOS
+
+            1. Open the `.dmg` and drag **NHSE** to **Applications**.
+            2. The app is ad-hoc signed, not notarized, so macOS blocks the first launch. Run this once in Terminal:
+               `xattr -dr com.apple.quarantine /Applications/NHSE.app`
+            3. Open NHSE and choose your save folder (the one containing `main.dat`) or a `.zip` of it.
+
+            Island: villagers, map editor, houses and rooms, museum, designs, turnips, visitors, bulletin board, recycle bin and flags. Residents: profile, pockets, storage, recipes, catalog, reactions, achievements, mailbox and flags. Saves are backed up when opened and written only when you press Save.
+
+            ## Nintendo Switch 2
+
+            Copy `nhse.nro` to `/switch/` on the SD card and open it from the homebrew menu.
+
+            - Edits the game's own save on the console: close Animal Crossing, pick the user who plays, edit, press **+** to save. The save is backed up to the SD card when it is opened, and the changes are written in a single commit, so if anything fails the game's save stays as it was.
+            - Also opens saves from the SD card (a folder, `main.dat` or a `.zip`) and restores backups.
+            - Residents: Bells, Nook Miles, hotel tickets, Poki, pockets and storage, recipes, catalog, reactions. Island: turnips, villagers moving out, museum, weeds, branches, shells, holes, watering, recycle bin.
+            - Light, dark, or the console's theme.
+
+            Backups are in `/switch/nhse/backups/` and open in the desktop app too. The map editor, villager replacement, designs and house editing are desktop only for now.
+
+            Game versions 1.0.0 to 3.0.3 are supported.
+
+            **We do not support or condone cheating at the expense of others.** Please be responsible!
