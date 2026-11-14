@@ -45,8 +45,10 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo test -p nhse-core -p nhse-switch --release
 
   macos:
@@ -59,14 +61,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ". -> target"
-      - run: npm ci
-      - run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+      - run: npm ci --ignore-scripts
+      - run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg
       - name: Collect
         run: |
           mkdir -p out
@@ -92,11 +95,12 @@ jobs:
           apt-get install -y --no-install-recommends curl ca-certificates build-essential
       - name: Install ounce-devkit
         run: |
-          curl -fsSL -o /tmp/install.sh \
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/install.sh \
             "https://raw.githubusercontent.com/ouncebrew/ounce-devkit/${OUNCE_DEVKIT_COMMIT}/install.sh"
           sh /tmp/install.sh "${OUNCE_DEVKIT_VERSION}"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
+          toolchain: stable
           components: rust-src
       - run: make -C switch -j"$(nproc)"
       - uses: actions/upload-artifact@v4
@@ -117,7 +121,7 @@ jobs:
           path: dist
           merge-multiple: true
       - run: ls -la dist
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
