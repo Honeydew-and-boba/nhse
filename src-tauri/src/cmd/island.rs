@@ -542,24 +542,10 @@ pub fn museum_donate_all(
     per_day: usize,
 ) -> CmdResult<(Museum, usize)> {
     with_save_mut!(state, |s| {
-        let t = nhse_core::data::tables();
-        let en = nhse_core::data::strings("en");
-        let mut ids: Vec<u16> = Vec::new();
-        for c in &categories {
-            match c.as_str() {
-                "fish" => ids.extend(t.list("Fish")),
-                "bugs" => ids.extend(t.list("Bugs")),
-                "sea" => ids.extend(t.list("Dive")),
-                "fossils" => ids.extend(t.list("Fossils")),
-                // genuine pieces only (forgeries have a parenthesised suffix)
-                "art" => ids.extend(
-                    t.list("Art")
-                        .iter()
-                        .filter(|i| !en.items.get(**i as usize).is_some_and(|n| n.contains('('))),
-                ),
-                _ => {}
-            }
-        }
+        let ids: Vec<u16> = categories
+            .iter()
+            .flat_map(|c| nhse_core::editing::itemsets::museum_ids(c))
+            .collect();
         let mut m = s.museum();
         let n = m.donate_all(&ids, player, per_day.max(1));
         s.set_museum(&m);

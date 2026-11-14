@@ -15,3 +15,10 @@
 .idea/
 .vscode/
 *.swp
+
+# Switch 2 homebrew build (switch/Makefile)
+/switch/build/
+/switch/*.nro
+/switch/*.nacp
+/switch/*.elf
+/switch/*.map

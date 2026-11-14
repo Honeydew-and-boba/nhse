@@ -1,0 +1,22 @@
+[package]
+name = "nhse-switch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NHSE for Nintendo Switch 2 homebrew (an .nro built with ounce-devkit)"
+
+[lib]
+name = "nhse_switch"
+# staticlib: linked into nhse.nro by switch/Makefile. rlib: the host preview and tests.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+nhse-core = { path = "../nhse-core" }
+fontdue = "0.9"
+
+# the desktop preview and tests write screenshots
+[target.'cfg(not(target_os = "horizon"))'.dependencies]
+png = "0.17"
+
+[dev-dependencies]
+tempfile = "3"
