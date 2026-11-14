@@ -15,8 +15,9 @@ on:
         description: "Release tag, e.g. v4.0.0 (must match the version in Cargo.toml)"
         required: true
 
+# Read-only by default; only the publish job may write (it creates the release).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
@@ -108,6 +109,8 @@ jobs:
     name: Publish
     needs: [check, macos, switch2]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
