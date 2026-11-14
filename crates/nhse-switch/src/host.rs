@@ -30,6 +30,8 @@ pub struct HostPlatform {
     mounted: Option<(PathBuf, PathBuf)>,
     /// Fails the next commit (to test that the game save stays untouched).
     pub fail_commit: bool,
+    /// The console theme to report.
+    pub system_dark: bool,
     time: i64,
 }
 
@@ -75,6 +77,7 @@ impl HostPlatform {
             hold: None,
             mounted: None,
             fail_commit: false,
+            system_dark: false,
             time: 1_763_112_333,
         }
     }
@@ -86,18 +89,22 @@ impl HostPlatform {
 
     fn write_png(&self, c: &Canvas, name: &str) {
         let _ = std::fs::create_dir_all(&self.shots);
-        let path = self.shots.join(format!("{name}.png"));
-        let f = std::fs::File::create(&path).expect("screenshot file");
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(f), WIDTH as u32, HEIGHT as u32);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut w = enc.write_header().expect("png header");
-        let mut data = Vec::with_capacity(WIDTH * HEIGHT * 3);
-        for p in &c.px {
-            data.extend_from_slice(&[(*p & 0xFF) as u8, (*p >> 8) as u8, (*p >> 16) as u8]);
-        }
-        w.write_image_data(&data).expect("png data");
+        save_png(c, &self.shots.join(format!("{name}.png")));
     }
+}
+
+/// Writes a frame as a PNG.
+pub fn save_png(c: &Canvas, path: &Path) {
+    let f = std::fs::File::create(path).expect("screenshot file");
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), WIDTH as u32, HEIGHT as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut w = enc.write_header().expect("png header");
+    let mut data = Vec::with_capacity(WIDTH * HEIGHT * 3);
+    for p in &c.px {
+        data.extend_from_slice(&[(*p & 0xFF) as u8, (*p >> 8) as u8, (*p >> 16) as u8]);
+    }
+    w.write_image_data(&data).expect("png data");
 }
 
 impl Platform for HostPlatform {
@@ -182,5 +189,9 @@ impl Platform for HostPlatform {
 
     fn local_time(&self) -> i64 {
         self.time
+    }
+
+    fn system_dark(&mut self) -> bool {
+        self.system_dark
     }
 }

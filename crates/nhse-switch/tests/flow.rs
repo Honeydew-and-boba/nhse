@@ -184,3 +184,24 @@ fn backup_restores_the_game_save() {
         .count();
     assert_eq!(n, 2);
 }
+
+#[test]
+fn theme_switch_is_remembered() {
+    use nhse_switch::theme::ThemeChoice;
+    let tmp = setup();
+    let root = tmp.path();
+    // Home: Appearance is the row above About (the last row)
+    let script = vec![Press(ZR), Press(UP), Press(A), Press(A), Press(RIGHT)];
+    let app = run(root, script, &[], false);
+    // System → Light → Dark → System
+    assert_eq!(app.cx.theme_choice, ThemeChoice::System);
+    let script = vec![Press(ZR), Press(UP), Press(A), Press(A)];
+    let app = run(root, script, &[], false);
+    assert_eq!(app.cx.theme_choice, ThemeChoice::Dark);
+    assert!(app.cx.theme().dark);
+    // a new start reads the setting back
+    let app = run(root, vec![], &[], false);
+    assert_eq!(app.cx.theme_choice, ThemeChoice::Dark);
+    let saved = std::fs::read_to_string(root.join("sd/switch/nhse/settings.txt")).unwrap();
+    assert_eq!(saved.trim(), "theme=dark");
+}

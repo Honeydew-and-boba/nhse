@@ -188,6 +188,19 @@ int64_t nhse_local_time(void)
     return (int64_t)ts;
 }
 
+// The console's theme: 1 dark, 0 light, -1 unknown.
+int nhse_system_dark(void)
+{
+    if (R_FAILED(setsysInitialize()))
+        return -1;
+    ColorSetId id = ColorSetId_Light;
+    Result rc = setsysGetColorSetId(&id);
+    setsysExit();
+    if (R_FAILED(rc))
+        return -1;
+    return id == ColorSetId_Dark ? 1 : 0;
+}
+
 // Rust's standard library seeds its hash maps with getrandom, which newlib lacks.
 ssize_t getrandom(void *buf, size_t len, unsigned int flags)
 {

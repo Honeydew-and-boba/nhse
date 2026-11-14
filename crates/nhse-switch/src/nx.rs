@@ -21,6 +21,7 @@ extern "C" {
     fn nhse_commit_save() -> u32;
     fn nhse_unmount_save();
     fn nhse_local_time() -> i64;
+    fn nhse_system_dark() -> i32;
 }
 
 /// The mount name `nhse_mount_save` uses.
@@ -133,6 +134,10 @@ impl Platform for Nx {
 
     fn local_time(&self) -> i64 {
         unsafe { nhse_local_time() }
+    }
+
+    fn system_dark(&mut self) -> bool {
+        unsafe { nhse_system_dark() == 1 }
     }
 }
 

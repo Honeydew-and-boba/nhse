@@ -80,4 +80,6 @@ pub trait Platform {
     fn sd_root(&self) -> PathBuf;
     /// Seconds since 1970 in the console's local time zone.
     fn local_time(&self) -> i64;
+    /// Whether the console's theme (System Settings → Themes) is dark.
+    fn system_dark(&mut self) -> bool;
 }

@@ -5,25 +5,40 @@ use crate::platform::{btn, Input, KeyboardMode, KeyboardRequest, Platform, UserA
 use crate::session::{self, Session};
 use nhse_core::{HorizonSave, Item};
 
-pub mod theme {
-    use crate::gfx::Color;
-    pub const BG: Color = Color(0xF6F1DE);
-    pub const HEADER: Color = Color(0x2FB49F);
-    pub const HEADER_DARK: Color = Color(0x239684);
-    pub const CARD: Color = Color(0xFFFCF3);
-    pub const SHADOW: Color = Color(0xD9CFB0);
-    pub const TEXT: Color = Color(0x5A4636);
-    pub const MUTED: Color = Color(0x9C8B75);
-    pub const SELECT: Color = Color(0xFFE27A);
-    pub const SELECT_EDGE: Color = Color(0xF2B83B);
-    pub const ACCENT: Color = Color(0x1E9C89);
-    pub const DANGER: Color = Color(0xD9534F);
-    pub const OK: Color = Color(0x3FA66B);
-    pub const FOOTER: Color = Color(0xECE4C9);
-    pub const WHITE: Color = Color(0xFFFFFF);
-    pub const BUTTON: Color = Color(0x5A4636);
+use crate::gfx::Mask;
+use crate::theme::{Theme, ThemeChoice};
+
+/// How the logo at the top left looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogoStyle {
+    /// The palm tree of the app icon, then "NHSE".
+    Palm,
+    /// The whole app icon (frame, palm tree and pencil), then "NHSE".
+    Icon,
+    /// The palm tree on a rounded tile, like a small app icon, then "NHSE".
+    Badge,
+    /// "NHSE" only.
+    Text,
 }
-use theme::*;
+
+/// The logo masks, scaled for the header.
+struct Logos {
+    palm: Mask,
+    icon: Mask,
+    badge_palm: Mask,
+}
+
+impl Logos {
+    fn new() -> Self {
+        let palm = Mask::from_bytes(include_bytes!("../assets/palm.mask"));
+        let icon = Mask::from_bytes(include_bytes!("../assets/logo.mask"));
+        Self {
+            palm: palm.scaled(46),
+            icon: icon.scaled(50),
+            badge_palm: palm.scaled(34),
+        }
+    }
+}
 
 /// How a row looks and whether it can be selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,10 +214,49 @@ pub struct Cx {
     pub session: Option<Session>,
     /// An item copied in an item list.
     pub clipboard: Option<Item>,
+    pub theme_choice: ThemeChoice,
+    /// Whether the console's own theme is dark (for [`ThemeChoice::System`]).
+    pub system_dark: bool,
+    pub logo: LogoStyle,
     toast: Option<(String, bool, u32)>,
 }
 
+const SETTINGS_FILE: &str = "settings.txt";
+
 impl Cx {
+    pub fn theme(&self) -> &'static Theme {
+        self.theme_choice.theme(self.system_dark)
+    }
+
+    /// Changes the theme and remembers it on the SD card.
+    pub fn set_theme(&mut self, choice: ThemeChoice) {
+        self.theme_choice = choice;
+        if choice == ThemeChoice::System {
+            self.system_dark = self.platform.system_dark();
+        }
+        let dir = self.platform.data_dir();
+        let saved = std::fs::create_dir_all(&dir).and_then(|_| {
+            std::fs::write(
+                dir.join(SETTINGS_FILE),
+                format!("theme={}\n", choice.name()),
+            )
+        });
+        if let Err(e) = saved {
+            self.toast_error(format!("The setting could not be saved: {e}"));
+        }
+    }
+
+    fn load_settings(&mut self) {
+        let path = self.platform.data_dir().join(SETTINGS_FILE);
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines() {
+                if let Some(t) = line.strip_prefix("theme=").and_then(ThemeChoice::parse) {
+                    self.theme_choice = t;
+                }
+            }
+        }
+    }
+
     pub fn toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), false, 180));
     }
@@ -338,6 +392,7 @@ pub struct App {
     stack: Vec<Entry>,
     modal: Option<Modal>,
     gfx: Gfx,
+    logos: Logos,
     /// Frames each direction has been held, for key repeat.
     held_frames: [u32; 4],
     redraw: bool,
@@ -345,17 +400,24 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(platform: Box<dyn Platform>, root: Box<dyn View>) -> Self {
+    pub fn new(mut platform: Box<dyn Platform>, root: Box<dyn View>) -> Self {
+        let system_dark = platform.system_dark();
+        let mut cx = Cx {
+            platform,
+            session: None,
+            clipboard: None,
+            theme_choice: ThemeChoice::System,
+            system_dark,
+            logo: LogoStyle::Palm,
+            toast: None,
+        };
+        cx.load_settings();
         Self {
-            cx: Cx {
-                platform,
-                session: None,
-                clipboard: None,
-                toast: None,
-            },
+            cx,
             stack: vec![Entry::new(root)],
             modal: None,
             gfx: Gfx::new(),
+            logos: Logos::new(),
             held_frames: [0; 4],
             redraw: true,
             quit: false,
@@ -584,12 +646,19 @@ impl App {
     // --- drawing -------------------------------------------------------------
 
     fn draw(&mut self) {
-        let Self { gfx, stack, cx, .. } = self;
+        let Self {
+            gfx,
+            stack,
+            cx,
+            logos,
+            ..
+        } = self;
         let e = stack.last().expect("stack");
         let g = gfx;
+        g.theme = cx.theme();
         g.canvas.set_clip(None);
-        g.canvas.clear(BG);
-        draw_header(g, cx, &e.view.title(cx));
+        g.canvas.clear(g.theme.bg);
+        draw_header(g, cx, logos, &e.view.title(cx));
         draw_list(g, e, e.view.empty_text());
         let info = e.view.info(cx, &e.rows, e.sel);
         draw_info(g, &info);
@@ -631,23 +700,34 @@ impl App {
 
     fn draw_busy(&mut self, text: &str) {
         let g = &mut self.gfx;
+        let t = g.theme;
         g.canvas.fill_alpha(
             Rect::new(0, 0, WIDTH as i32, HEIGHT as i32),
-            Color(0x2A2018),
-            120,
+            t.overlay,
+            t.overlay_alpha,
         );
         let r = Rect::new(WIDTH as i32 / 2 - 240, HEIGHT as i32 / 2 - 60, 480, 120);
-        g.canvas.round_rect(r, 24, CARD);
+        g.canvas.round_rect(r, 24, t.card);
         // three dots
         for i in 0..3 {
             g.canvas.circle(
                 r.x + 56 + i * 22,
                 r.y + 60,
                 7,
-                if i == 1 { SELECT_EDGE } else { HEADER },
+                if i == 1 { t.warn } else { t.ok },
             );
         }
-        g.text(r.x + 140, r.y + 44, text, 26, Weight::Bold, TEXT);
+        g.text(r.x + 140, r.y + 44, text, 26, Weight::Bold, t.text);
+    }
+
+    /// Draws the current screen with a given logo (for the logo previews).
+    pub fn render_with_logo(&mut self, logo: LogoStyle) -> &crate::gfx::Canvas {
+        let old = self.cx.logo;
+        self.cx.logo = logo;
+        self.refresh();
+        self.draw();
+        self.cx.logo = old;
+        &self.gfx.canvas
     }
 }
 
@@ -714,44 +794,81 @@ fn move_sel(e: &mut Entry, delta: i32, wrap: bool) {
 }
 
 fn card(g: &mut Gfx, r: Rect) {
+    let t = g.theme;
     g.canvas
-        .round_rect(Rect::new(r.x, r.y + 4, r.w, r.h), 22, SHADOW);
-    g.canvas.round_rect(r, 22, CARD);
+        .round_rect(Rect::new(r.x, r.y + 4, r.w, r.h), 22, t.shadow);
+    g.canvas.round_rect(r, 22, t.card);
 }
 
-fn draw_header(g: &mut Gfx, cx: &Cx, title: &str) {
+/// Draws the logo at the top left. Returns where the title can start.
+fn draw_logo(g: &mut Gfx, logos: &Logos, style: LogoStyle) -> i32 {
+    let t = g.theme;
+    let mid = HEADER_H / 2 - 2;
+    let x = match style {
+        LogoStyle::Palm => {
+            let m = &logos.palm;
+            g.canvas.mask(26, mid - m.h as i32 / 2, m, t.logo);
+            26 + m.w as i32 + 12
+        }
+        LogoStyle::Icon => {
+            let m = &logos.icon;
+            g.canvas.mask(22, mid - m.h as i32 / 2, m, t.logo);
+            22 + m.w as i32 + 12
+        }
+        LogoStyle::Badge => {
+            let r = Rect::new(22, mid - 26, 52, 52);
+            let (tile, palm) = if t.dark {
+                (t.logo, t.header)
+            } else {
+                (t.header_text, t.header)
+            };
+            g.canvas.round_rect(r, 15, tile);
+            let m = &logos.badge_palm;
+            g.canvas.mask(
+                r.x + (r.w - m.w as i32) / 2,
+                r.y + (r.h - m.h as i32) / 2,
+                m,
+                palm,
+            );
+            r.right() + 14
+        }
+        LogoStyle::Text => 30,
+    };
+    let w = g.text(x, mid - 18, "NHSE", 30, Weight::Bold, t.header_text);
+    x + w
+}
+
+fn draw_header(g: &mut Gfx, cx: &Cx, logos: &Logos, title: &str) {
+    let t = g.theme;
     g.canvas
-        .fill(Rect::new(0, 0, WIDTH as i32, HEADER_H), HEADER);
+        .fill(Rect::new(0, 0, WIDTH as i32, HEADER_H), t.header);
     g.canvas
-        .fill(Rect::new(0, HEADER_H - 4, WIDTH as i32, 4), HEADER_DARK);
-    // leaf mark
-    g.canvas.circle(52, HEADER_H / 2, 22, WHITE);
-    g.canvas.round_rect(Rect::new(42, 22, 20, 30), 10, HEADER);
-    g.canvas.fill(Rect::new(51, 30, 2, 22), WHITE);
-    let w = g.text(88, 20, "NHSE", 30, Weight::Bold, WHITE);
-    let x = 88 + w + 18;
-    g.canvas.fill_alpha(Rect::new(x, 24, 2, 30), WHITE, 120);
+        .fill(Rect::new(0, HEADER_H - 4, WIDTH as i32, 4), t.header_edge);
+    let x = draw_logo(g, logos, cx.logo) + 18;
+    g.canvas
+        .fill_alpha(Rect::new(x, 22, 2, 30), t.header_text, 110);
     let right_limit = WIDTH as i32 - 330;
-    let t = g
+    let title = g
         .fonts
         .ellipsize(title, 26, Weight::Medium, right_limit - x - 20);
-    g.text(x + 18, 22, &t, 26, Weight::Medium, WHITE);
+    g.text(x + 18, 20, &title, 26, Weight::Medium, t.header_text);
     if let Some(s) = &cx.session {
         let (label, bg, fg) = if s.dirty {
-            ("Unsaved changes", SELECT, TEXT)
+            ("Unsaved changes", t.pill_dirty, t.pill_dirty_text)
         } else {
-            ("Saved", HEADER_DARK, WHITE)
+            ("Saved", t.pill_saved, t.pill_saved_text)
         };
         let lw = g.fonts.measure(label, 18, Weight::Bold) + 28;
         let px = WIDTH as i32 - 28 - lw;
-        g.canvas.round_rect(Rect::new(px, 23, lw, 32), 16, bg);
-        g.text(px + 14, 28, label, 18, Weight::Bold, fg);
+        g.canvas.round_rect(Rect::new(px, 21, lw, 32), 16, bg);
+        g.text(px + 14, 26, label, 18, Weight::Bold, fg);
         let town = g.fonts.ellipsize(&s.town(), 22, Weight::Bold, 200);
-        g.text_right(px - 16, 25, &town, 22, Weight::Bold, WHITE);
+        g.text_right(px - 16, 23, &town, 22, Weight::Bold, t.header_text);
     }
 }
 
 fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
+    let t = g.theme;
     card(g, LIST);
     if e.rows.is_empty() {
         g.text_center(
@@ -760,7 +877,7 @@ fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
             empty,
             22,
             Weight::Medium,
-            MUTED,
+            t.muted,
         );
         return;
     }
@@ -779,9 +896,9 @@ fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
         let selected = k == e.sel;
         if selected {
             let r = Rect::new(inner.x, y + 2, right - inner.x + 4, ROW_H - 4);
-            g.canvas.round_rect(r, 14, SELECT_EDGE);
+            g.canvas.round_rect(r, 14, t.select_edge);
             g.canvas
-                .round_rect(Rect::new(r.x + 2, r.y + 2, r.w - 4, r.h - 4), 12, SELECT);
+                .round_rect(Rect::new(r.x + 2, r.y + 2, r.w - 4, r.h - 4), 12, t.select);
         }
         let ty = y + (ROW_H - 28) / 2;
         match row.style {
@@ -792,19 +909,19 @@ fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
                     &row.label.to_uppercase(),
                     16,
                     Weight::Bold,
-                    MUTED,
+                    t.muted,
                 );
                 g.canvas.fill(
                     Rect::new(inner.x + 12, y + ROW_H - 8, right - inner.x - 12, 2),
-                    Color(0xEDE5CC),
+                    t.divider,
                 );
             }
             _ => {
                 let color = match row.style {
-                    Style::Action => ACCENT,
-                    Style::Danger => DANGER,
-                    Style::Muted => MUTED,
-                    _ => TEXT,
+                    Style::Action => t.accent,
+                    Style::Danger => t.danger,
+                    Style::Muted => t.muted,
+                    _ => t.text,
                 };
                 let value_w = if row.value.is_empty() {
                     0
@@ -826,7 +943,7 @@ fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
                         &v,
                         21,
                         Weight::Bold,
-                        if selected { TEXT } else { MUTED },
+                        if selected { t.text } else { t.text2 },
                     );
                 }
             }
@@ -835,16 +952,17 @@ fn draw_list(g: &mut Gfx, e: &Entry, empty: &str) {
     g.canvas.set_clip(None);
     if overflow {
         let track = Rect::new(inner.right() - 10, inner.y + 4, 6, inner.h - 8);
-        g.canvas.round_rect(track, 3, Color(0xEDE5CC));
+        g.canvas.round_rect(track, 3, t.divider);
         let n = e.rows.len() as i32;
         let h = (track.h * vis as i32 / n).max(30);
         let y = track.y + (track.h - h) * e.scroll as i32 / (n - vis as i32).max(1);
         g.canvas
-            .round_rect(Rect::new(track.x, y, track.w, h), 3, MUTED);
+            .round_rect(Rect::new(track.x, y, track.w, h), 3, t.muted);
     }
 }
 
 fn draw_info(g: &mut Gfx, info: &Info) {
+    let t = g.theme;
     card(g, INFO);
     let x = INFO.x + 28;
     let w = INFO.w - 56;
@@ -856,22 +974,22 @@ fn draw_info(g: &mut Gfx, info: &Info) {
             .into_iter()
             .take(3)
         {
-            g.text(x, y, &line, 26, Weight::Bold, TEXT);
+            g.text(x, y, &line, 26, Weight::Bold, t.text);
             y += 34;
         }
         y += 6;
-        g.canvas.round_rect(Rect::new(x, y, 48, 5), 2, HEADER);
+        g.canvas.round_rect(Rect::new(x, y, 48, 5), 2, t.ok);
         y += 22;
     }
     for (k, v) in &info.facts {
-        g.text(x, y, k, 18, Weight::Medium, MUTED);
+        g.text(x, y, k, 18, Weight::Medium, t.muted);
         let vv = g.fonts.ellipsize(
             v,
             20,
             Weight::Bold,
             w - g.fonts.measure(k, 18, Weight::Medium) - 16,
         );
-        g.text_right(x + w, y - 1, &vv, 20, Weight::Bold, TEXT);
+        g.text_right(x + w, y - 1, &vv, 20, Weight::Bold, t.text);
         y += 32;
     }
     if !info.facts.is_empty() {
@@ -882,18 +1000,26 @@ fn draw_info(g: &mut Gfx, info: &Info) {
         if y + 26 > bottom {
             break;
         }
-        g.text(x, y, &line, 20, Weight::Medium, TEXT);
+        g.text(x, y, &line, 20, Weight::Medium, t.text2);
         y += 28;
     }
 }
 
 /// A round (or, for two letters, pill shaped) button glyph. Returns its width.
 fn button_glyph(g: &mut Gfx, x: i32, cy: i32, label: &str) -> i32 {
+    let t = g.theme;
     let tw = g.fonts.measure(label, 17, Weight::Bold);
     let w = (tw + 16).max(30);
     g.canvas
-        .round_rect(Rect::new(x, cy - 15, w, 30), 15, BUTTON);
-    g.text(x + (w - tw) / 2, cy - 11, label, 17, Weight::Bold, WHITE);
+        .round_rect(Rect::new(x, cy - 15, w, 30), 15, t.button);
+    g.text(
+        x + (w - tw) / 2,
+        cy - 11,
+        label,
+        17,
+        Weight::Bold,
+        t.button_text,
+    );
     w
 }
 
@@ -910,23 +1036,26 @@ fn hints_width(g: &Gfx, hints: &[(&str, &str)]) -> i32 {
 }
 
 fn draw_hints(g: &mut Gfx, right: i32, cy: i32, hints: &[(&str, &str)]) {
+    let color = g.theme.text;
     let mut x = right - hints_width(g, hints) + 24;
-    for (b, t) in hints {
+    for (b, label) in hints {
         x += button_glyph(g, x, cy, b) + 8;
-        x += g.text(x, cy - 12, t, 19, Weight::Medium, TEXT) + 24;
+        x += g.text(x, cy - 12, label, 19, Weight::Medium, color) + 24;
     }
 }
 
 fn draw_footer(g: &mut Gfx, cx: &Cx, hints: &[(&str, &str)]) {
+    let t = g.theme;
     let y = HEIGHT as i32 - FOOTER_H;
     g.canvas
-        .fill(Rect::new(0, y, WIDTH as i32, FOOTER_H), FOOTER);
+        .fill(Rect::new(0, y, WIDTH as i32, FOOTER_H), t.footer);
     let cy = y + FOOTER_H / 2;
     let hw = hints_width(g, hints);
     draw_hints(g, WIDTH as i32 - 28, cy, hints);
     let room = WIDTH as i32 - 28 - hw - 60;
     if let Some((msg, error, _)) = &cx.toast {
-        g.canvas.circle(40, cy, 7, if *error { DANGER } else { OK });
+        g.canvas
+            .circle(40, cy, 7, if *error { t.danger } else { t.ok });
         let m = g.fonts.ellipsize(msg, 19, Weight::Bold, room);
         g.text(
             56,
@@ -934,19 +1063,20 @@ fn draw_footer(g: &mut Gfx, cx: &Cx, hints: &[(&str, &str)]) {
             &m,
             19,
             Weight::Bold,
-            if *error { DANGER } else { TEXT },
+            if *error { t.danger } else { t.text },
         );
     } else if let Some(s) = &cx.session {
         let m = g.fonts.ellipsize(&s.location(), 18, Weight::Medium, room);
-        g.text(32, cy - 11, &m, 18, Weight::Medium, MUTED);
+        g.text(32, cy - 11, &m, 18, Weight::Medium, t.muted);
     }
 }
 
 fn draw_dialog(g: &mut Gfx, title: &str, text: &str, hints: &[(&str, &str)], danger: bool) {
+    let t = g.theme;
     g.canvas.fill_alpha(
         Rect::new(0, 0, WIDTH as i32, HEIGHT as i32),
-        Color(0x2A2018),
-        130,
+        t.overlay,
+        t.overlay_alpha,
     );
     let w = 680;
     let lines = g.fonts.wrap(text, 21, Weight::Medium, w - 80);
@@ -954,14 +1084,11 @@ fn draw_dialog(g: &mut Gfx, title: &str, text: &str, hints: &[(&str, &str)], dan
     let h = 150 + lines.len() as i32 * 30;
     let r = Rect::new((WIDTH as i32 - w) / 2, (HEIGHT as i32 - h) / 2, w, h);
     g.canvas
-        .round_rect(Rect::new(r.x, r.y + 6, r.w, r.h), 28, Color(0x1E1610));
-    g.canvas.round_rect(r, 28, CARD);
-    g.canvas.round_rect(
-        Rect::new(r.x, r.y, r.w, 10),
-        5,
-        if danger { DANGER } else { HEADER },
-    );
-    g.canvas.fill(Rect::new(r.x, r.y + 5, r.w, 23), CARD);
+        .round_rect_alpha(Rect::new(r.x, r.y + 6, r.w, r.h), 28, Color(0x000000), 90);
+    g.canvas.round_rect(r, 28, t.card);
+    // a colored strip along the top edge, inside the rounded corners
+    let strip = if danger { t.danger } else { t.ok };
+    g.canvas.fill(Rect::new(r.x + 28, r.y, r.w - 56, 6), strip);
     let mut y = r.y + 30;
     g.text(
         r.x + 40,
@@ -969,11 +1096,11 @@ fn draw_dialog(g: &mut Gfx, title: &str, text: &str, hints: &[(&str, &str)], dan
         title,
         27,
         Weight::Bold,
-        if danger { DANGER } else { TEXT },
+        if danger { t.danger } else { t.text },
     );
     y += 50;
     for l in &lines {
-        g.text(r.x + 40, y, l, 21, Weight::Medium, TEXT);
+        g.text(r.x + 40, y, l, 21, Weight::Medium, t.text2);
         y += 30;
     }
     draw_hints(g, r.right() - 32, r.bottom() - 36, hints);

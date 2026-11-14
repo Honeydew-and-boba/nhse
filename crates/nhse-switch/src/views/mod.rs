@@ -23,6 +23,18 @@ pub fn prettify(name: &str) -> String {
     out
 }
 
+/// "System (dark)", "Light", "Dark".
+fn theme_label(cx: &Cx) -> String {
+    use crate::theme::ThemeChoice;
+    match cx.theme_choice {
+        ThemeChoice::System => {
+            format!("System ({})", if cx.system_dark { "dark" } else { "light" })
+        }
+        ThemeChoice::Light => "Light".into(),
+        ThemeChoice::Dark => "Dark".into(),
+    }
+}
+
 /// Opens the editor on a freshly opened session.
 fn opened(cx: &mut Cx, s: session::Session) -> Nav {
     let warnings = s.save.warnings.clone();
@@ -54,7 +66,7 @@ impl Home {
         if cx.session.is_some() {
             ids.push(Self::CONTINUE);
         }
-        ids.extend([10, 1, 2, 11, 3, 4]);
+        ids.extend([10, 1, 2, 11, 3, 5, 4]);
         ids
     }
 
@@ -94,6 +106,9 @@ impl View for Home {
                         session::backups_dir(cx.platform.as_ref()).display()
                     ))
                 }
+                5 => Row::new("Appearance").value(theme_label(cx)).help(
+                    "Light or dark colors. System follows the console's theme (System Settings → Themes).\n\nPress A, or left and right, to switch.",
+                ),
                 4 => Row::new("About NHSE").help(format!(
                     "NHSE {} for Nintendo Switch 2, built with ounce-devkit.\n\nSupports Animal Crossing: New Horizons {} to {}.",
                     env!("CARGO_PKG_VERSION"),
@@ -121,6 +136,11 @@ impl View for Home {
             ),
             Some(2) => Nav::Push(Box::new(Browser::new(cx.platform.sd_root()))),
             Some(3) => Nav::Push(Box::new(Backups)),
+            Some(5) => {
+                let next = cx.theme_choice.next();
+                cx.set_theme(next);
+                Nav::Stay
+            }
             Some(4) => Nav::message(
                 "About NHSE",
                 format!(
@@ -132,8 +152,24 @@ impl View for Home {
         }
     }
 
-    fn button(&mut self, cx: &mut Cx, b: u32, _row: usize) -> Option<Nav> {
-        (b == btn::PLUS).then(|| self.back(cx))
+    fn button(&mut self, cx: &mut Cx, b: u32, row: usize) -> Option<Nav> {
+        let on_theme = Self::layout(cx).get(row) == Some(&5);
+        match b {
+            btn::PLUS => Some(self.back(cx)),
+            btn::LEFT | btn::RIGHT if on_theme => {
+                let c = cx.theme_choice;
+                cx.set_theme(if b == btn::LEFT { c.prev() } else { c.next() });
+                Some(Nav::Stay)
+            }
+            _ => None,
+        }
+    }
+
+    fn a_label(&self, cx: &Cx, row: usize) -> &'static str {
+        match Self::layout(cx).get(row) {
+            Some(5) => "Switch",
+            _ => "Select",
+        }
     }
 
     fn back(&mut self, cx: &mut Cx) -> Nav {

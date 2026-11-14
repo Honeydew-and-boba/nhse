@@ -36,6 +36,9 @@ You can also open a save from the SD card (a folder with `main.dat`, `main.dat` 
 
 Numbers and item searches use the system keyboard.
 
+**Appearance** on the start screen switches between light and dark colors (the desktop app's), or
+**System**, which follows the console's theme. The choice is remembered.
+
 ### What it edits
 
 - **Residents:** wallet, bank, Nook Miles (current and total), hotel tickets, Poki; pockets and home
@@ -55,6 +58,7 @@ The map editor, villager replacement, designs and house editing are desktop only
 - `/switch/nhse/backups/<Island> <date>/`: a backup of each save you open (the 30 newest are kept).
   Each is a plain save folder, so the desktop NHSE can open it too.
 - `/switch/nhse/game/<user id>/`: the working copy of a game save while you edit it.
+- `/switch/nhse/settings.txt`: the appearance setting.
 - `/switch/nhse/crash.txt`: written if the app crashes.
 
 ## Build
@@ -80,6 +84,9 @@ How it fits together:
 - `switch/cargo-build.sh`: the cargo command for the library. `switch/aarch64-switch-horizon.json`
   is OunceVK's Rust target for Switch 2.
 - `switch/Makefile`: ounce-devkit's example Makefile, linking the library into `nhse.nro`.
+- `switch/tools/make-logo.py`: makes the homebrew menu icon (`switch/icon.jpg`) and the in-app
+  logo masks (`crates/nhse-switch/assets/*.mask`) from `assets/switch-logo.png`. Run it again
+  after changing the logo.
 
 The same app runs on a desktop for tests and screenshots:
 

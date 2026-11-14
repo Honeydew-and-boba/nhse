@@ -185,6 +185,71 @@ impl Canvas {
     }
 }
 
+/// An 8-bit alpha image, drawn tinted in one color (the logo).
+#[derive(Clone)]
+pub struct Mask {
+    pub w: usize,
+    pub h: usize,
+    pub alpha: Vec<u8>,
+}
+
+impl Mask {
+    /// Reads `u16 width, u16 height` (little endian) and the alpha bytes, as written by
+    /// switch/tools/make-logo.py.
+    pub fn from_bytes(b: &[u8]) -> Self {
+        let w = u16::from_le_bytes([b[0], b[1]]) as usize;
+        let h = u16::from_le_bytes([b[2], b[3]]) as usize;
+        Self {
+            w,
+            h,
+            alpha: b[4..4 + w * h].to_vec(),
+        }
+    }
+
+    /// The mask scaled down to `height` pixels (area averaging).
+    pub fn scaled(&self, height: usize) -> Mask {
+        let height = height.clamp(1, self.h);
+        let width = (self.w * height).div_ceil(self.h).max(1);
+        let mut alpha = vec![0u8; width * height];
+        for ty in 0..height {
+            let (y0, y1) = (ty * self.h / height, ((ty + 1) * self.h).div_ceil(height));
+            for tx in 0..width {
+                let (x0, x1) = (
+                    tx * self.w / width,
+                    ((tx + 1) * self.w).div_ceil(width).min(self.w),
+                );
+                let mut sum = 0u32;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        sum += self.alpha[y * self.w + x] as u32;
+                    }
+                }
+                let n = ((y1 - y0) * (x1 - x0)).max(1) as u32;
+                alpha[ty * width + tx] = (sum / n) as u8;
+            }
+        }
+        Mask {
+            w: width,
+            h: height,
+            alpha,
+        }
+    }
+}
+
+impl Canvas {
+    /// Draws a mask in `color` with its top left corner at (x, y).
+    pub fn mask(&mut self, x: i32, y: i32, m: &Mask, color: Color) {
+        for row in 0..m.h {
+            for col in 0..m.w {
+                let a = m.alpha[row * m.w + col] as u32;
+                if a != 0 {
+                    self.blend(x + col as i32, y + row as i32, color, a);
+                }
+            }
+        }
+    }
+}
+
 /// Font weights embedded in the app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Weight {
@@ -366,10 +431,11 @@ impl Fonts {
     }
 }
 
-/// The canvas and the fonts together.
+/// The canvas, the fonts and the theme to draw with.
 pub struct Gfx {
     pub canvas: Canvas,
     pub fonts: Fonts,
+    pub theme: &'static crate::theme::Theme,
 }
 
 impl Default for Gfx {
@@ -383,6 +449,7 @@ impl Gfx {
         Self {
             canvas: Canvas::new(),
             fonts: Fonts::new(),
+            theme: &crate::theme::LIGHT,
         }
     }
 

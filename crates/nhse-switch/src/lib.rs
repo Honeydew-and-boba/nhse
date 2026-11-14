@@ -9,6 +9,7 @@ pub mod fmt;
 pub mod gfx;
 pub mod platform;
 pub mod session;
+pub mod theme;
 pub mod ui;
 pub mod views;
 
