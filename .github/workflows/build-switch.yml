@@ -2,8 +2,8 @@ name: Build Switch 2 homebrew
 
 on:
   push:
+    # version tags (v*) are built by release.yml
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 

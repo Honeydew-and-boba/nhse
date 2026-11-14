@@ -9,8 +9,8 @@ It can edit the game's own save directly: no dumping or copying to a computer.
 
 ## Install
 
-1. Get `nhse.nro`: from the *Build Switch 2 homebrew* workflow (artifact **NHSE-Switch2**), the
-   `nightly-switch2` pre-release, or build it (below).
+1. Get `nhse.nro` from the [latest release](https://github.com/cedricroulof/nhse/releases/latest),
+   the `nightly-switch2` pre-release (latest code), or build it (below).
 2. Copy it to `/switch/` on the SD card.
 3. Open it from the homebrew menu.
 
