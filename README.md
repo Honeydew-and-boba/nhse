@@ -3,8 +3,8 @@ NHSE
 ![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
 
 Save editor for **Animal Crossing: New Horizons**, rewritten in Rust with a native
-[Tauri](https://tauri.app) desktop app. It runs natively on Apple Silicon Macs, and as a homebrew
-app on the **Nintendo Switch 2**.
+[Tauri](https://tauri.app) desktop app. It runs natively on Apple Silicon Macs and on Windows (x64),
+and as a homebrew app on the **Nintendo Switch 2**.
 
 It edits save data dumped from the Nintendo Switch. Bring your own save: the app does not dump it from your console.
 
@@ -69,9 +69,20 @@ Requirements: Rust (stable), Node.js 22, and the [Tauri prerequisites](https://t
 ```sh
 npm ci
 npx tauri dev                       # run in development
-npx tauri build --bundles app,dmg   # release build
+npx tauri build                     # release build for the current platform
 cargo test -p nhse-core             # core library tests
 ```
+
+On **Windows**, install the Rust toolchain (MSVC) and the *Desktop development with C++* workload of
+the Visual Studio Build Tools, then:
+
+```sh
+npm ci
+npx tauri dev
+npx tauri build --bundles nsis      # target/release/bundle/nsis/NHSE_*_x64-setup.exe
+```
+
+WebView2 (needed to render the UI) ships with Windows 10 and 11.
 
 Layout:
 
