@@ -65,6 +65,18 @@ pub fn set_usage(d: &mut [u8], usage: u32) {
     put_u32(d, 0x70, usage);
 }
 
+/// Rewrites an unusable ownership/placement flag to a value the game accepts: `0xEE00` for
+/// opaque designs, `0xEE02` when any pixel is transparent.
+pub fn normalize_usage(d: &mut [u8], pro: bool) {
+    let usage = u32le(d, 0x70);
+    if usage == 0xEE00 || usage == 0xEE02 {
+        return;
+    }
+    let transparent = (0..sheets(pro))
+        .any(|s| (0..DIM * DIM).any(|i| pixel(d, s, i % DIM, i / DIM) >= PALETTE_COLORS as u8));
+    set_usage(d, if transparent { 0xEE02 } else { 0xEE00 });
+}
+
 /// Sets the author (town + player identity) of a design.
 pub fn set_author(d: &mut [u8], town_id: u32, town_name: &str, player_id: u32, player_name: &str) {
     put_u32(d, PERSONAL, town_id);
@@ -276,5 +288,31 @@ mod tests {
                 assert_eq!(&a[..3], &b[..3]);
             }
         }
+    }
+    #[test]
+    fn usage_normalized_from_transparency() {
+        let mut d = vec![0u8; NORMAL_SIZE];
+        set_usage(&mut d, 0xDD0F);
+        normalize_usage(&mut d, false);
+        assert_eq!(u32le(&d, 0x70), 0xEE00);
+        set_pixel(&mut d, 0, 31, 31, 15);
+        set_usage(&mut d, 0xDD0F);
+        normalize_usage(&mut d, false);
+        assert_eq!(u32le(&d, 0x70), 0xEE02);
+    }
+    #[test]
+    fn usage_known_values_untouched() {
+        let mut d = vec![0u8; NORMAL_SIZE];
+        set_usage(&mut d, 0xEE00);
+        set_pixel(&mut d, 0, 0, 0, 15);
+        normalize_usage(&mut d, false);
+        assert_eq!(u32le(&d, 0x70), 0xEE00);
+    }
+    #[test]
+    fn usage_checks_all_pro_sheets() {
+        let mut d = vec![0u8; PRO_SIZE];
+        set_pixel(&mut d, 3, 0, 0, 15);
+        normalize_usage(&mut d, true);
+        assert_eq!(u32le(&d, 0x70), 0xEE02);
     }
 }

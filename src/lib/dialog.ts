@@ -26,7 +26,7 @@ export const F = {
   nhvh: { name: "Villager house (.nhvh2, .nhvh)", extensions: ["nhvh2", "nhvh"] },
   nhph: { name: "Player house (.nhph2, .nhph)", extensions: ["nhph2", "nhph"] },
   nhpr: { name: "Room (.nhpr2, .nhpr)", extensions: ["nhpr2", "nhpr"] },
-  nhd: { name: "Design (.nhd)", extensions: ["nhd"] },
+  nhd: { name: "Design (.nhd, .acnh)", extensions: ["nhd", "acnh"] },
   nhpd: { name: "PRO design (.nhpd)", extensions: ["nhpd"] },
   nhpb: { name: "Letter (.nhpb)", extensions: ["nhpb"] },
   nhl: { name: "Field items (.nhl)", extensions: ["nhl"] },
