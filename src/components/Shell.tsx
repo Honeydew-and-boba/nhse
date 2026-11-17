@@ -5,6 +5,7 @@ import {
 import React from "react";
 import logo from "../logo.png";
 import { useStore, type Route } from "../lib/store";
+import { MOD } from "../lib/util";
 import { Badge, Button, Modal, Popover } from "./ui";
 
 type NavDef = { route: Route; label: string; icon: React.ReactNode; advanced?: boolean };
@@ -109,7 +110,7 @@ export function Topbar({ title, subtitle, actions }: { title: string; subtitle?:
             <Button size="sm" icon={<LogOut />} variant="ghost" title="Close save" onClick={async () => {
               if (!dirty || (await confirm({ title: "Close without saving?", message: "Your unsaved changes will be lost.", danger: true, confirm: "Close" }))) close();
             }} />
-            <Button variant="primary" icon={<Save />} disabled={!!busy} onClick={persist} title="Save (⌘S)">Save</Button>
+            <Button variant="primary" icon={<Save />} disabled={!!busy} onClick={persist} title={`Save (${MOD}S)`}>Save</Button>
           </>
         )}
       </div>

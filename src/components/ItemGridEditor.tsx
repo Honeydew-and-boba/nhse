@@ -4,6 +4,7 @@ import { api, NONE, type Item } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { itemLabel } from "../lib/items";
 import { useStore } from "../lib/store";
+import { MOD } from "../lib/util";
 import { ItemEditor } from "./ItemEditor";
 import { ItemSlot } from "./ItemSlot";
 import { Button, Modal, Popover, type MenuEntry } from "./ui";
@@ -170,7 +171,7 @@ export function ItemGridEditor({ items, onChange, columns = 10, unlocked, title,
               ))}
             </div>
           )}
-          <div className="tiny faint" style={{ marginTop: 10 }}>Click to select · ⇧ range · ⌘ toggle · drag to swap · ⌘C / ⌘V · ⌫ clears</div>
+          <div className="tiny faint" style={{ marginTop: 10 }}>{`Click to select · ⇧ range · ${MOD} toggle · drag to swap · ${MOD}C / ${MOD}V · ⌫ clears`}</div>
         </div>
       </div>
       <div className="card" style={{ flex: 1, minWidth: 300, position: "sticky", top: 0 }}>

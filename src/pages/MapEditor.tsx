@@ -10,6 +10,7 @@ import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
 import { EXT_ID, NONE_ID, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
 import { useGD, useStore } from "../lib/store";
+import { MOD } from "../lib/util";
 
 type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
@@ -410,7 +411,7 @@ export default function MapEditor() {
     if (!rect) return;
     clip.current = { w: rect.w, h: rect.h, tiles: grid().extract(rect.x, rect.y, rect.w, rect.h) };
     if (cut) { snapshot(); const g = grid(); for (let x = 0; x < rect.w; x++) for (let y = 0; y < rect.h; y++) g.set(rect.x + x, rect.y + y, NONE_ITEM); changed(layer); sync(layer); }
-    toast("info", `${cut ? "Cut" : "Copied"} ${rect.w}×${rect.h} tiles`, "Press ⌘V, then click where the top-left corner should go.");
+    toast("info", `${cut ? "Cut" : "Copied"} ${rect.w}×${rect.h} tiles`, `Press ${MOD}V, then click where the top-left corner should go.`);
   };
   const pasteClip = (x: number, y: number) => {
     const c = clip.current;
@@ -470,13 +471,13 @@ export default function MapEditor() {
             { value: "erase", label: "Erase", icon: <Eraser /> }, { value: "rect", label: "Area", icon: <SquareDashed /> }, { value: "pan", label: "Pan", icon: <Hand /> }]} />
           <Segmented value={layer} onChange={(l) => { setLayer(l); setSelTile(null); }} options={[{ value: 0, label: "Layer 1", icon: <Layers /> }, { value: 1, label: "Layer 2" }]} />
           <div className="row" style={{ gap: 4 }}>
-            <Button size="sm" iconOnly icon={<Undo2 />} title="Undo (⌘Z)" onClick={() => doUndo(undo, redo)} disabled={!undo.current.length} />
-            <Button size="sm" iconOnly icon={<Redo2 />} title="Redo (⇧⌘Z)" onClick={() => doUndo(redo, undo)} disabled={!redo.current.length} />
+            <Button size="sm" iconOnly icon={<Undo2 />} title={`Undo (${MOD}Z)`} onClick={() => doUndo(undo, redo)} disabled={!undo.current.length} />
+            <Button size="sm" iconOnly icon={<Redo2 />} title={`Redo (⇧${MOD}Z)`} onClick={() => doUndo(redo, undo)} disabled={!redo.current.length} />
           </div>
           {tool === "rect" && rect && (
             <div className="row" style={{ gap: 4 }}>
-              <Button size="sm" iconOnly icon={<Copy />} title="Copy (⌘C)" onClick={() => copyRect()} />
-              <Button size="sm" iconOnly icon={<Scissors />} title="Cut (⌘X)" onClick={() => copyRect(true)} />
+              <Button size="sm" iconOnly icon={<Copy />} title={`Copy (${MOD}C)`} onClick={() => copyRect()} />
+              <Button size="sm" iconOnly icon={<Scissors />} title={`Cut (${MOD}X)`} onClick={() => copyRect(true)} />
               <Button size="sm" iconOnly icon={<Trash2 />} title="Delete (⌫)" onClick={deleteRect} />
             </div>
           )}
@@ -496,7 +497,7 @@ export default function MapEditor() {
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
           {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the {pick.kind === "plaza" ? "plaza" : "building"} · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}</> : <span className="faint">Scroll to pan · pinch or ⌘-scroll to zoom · Space-drag to pan</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>
@@ -561,7 +562,7 @@ export default function MapEditor() {
         ) : <div className="faint small">Use <b>Select</b> (<span className="kbd">V</span>) and click a tile to inspect and edit the item on it.</div>}
         <div className="divider" />
         <div className="tiny faint" style={{ lineHeight: 1.7 }}>
-          <span className="kbd">V</span> select · <span className="kbd">B</span> place · <span className="kbd">E</span> erase · <span className="kbd">M</span> area · <span className="kbd">H</span> pan · <span className="kbd">1</span>/<span className="kbd">2</span> layer · <span className="kbd">⌘Z</span> undo · <span className="kbd">⌘C</span>/<span className="kbd">⌘V</span> copy/paste area
+          <span className="kbd">V</span> select · <span className="kbd">B</span> place · <span className="kbd">E</span> erase · <span className="kbd">M</span> area · <span className="kbd">H</span> pan · <span className="kbd">1</span>/<span className="kbd">2</span> layer · <span className="kbd">{MOD}Z</span> undo · <span className="kbd">{MOD}C</span>/<span className="kbd">{MOD}V</span> copy/paste area
         </div>
       </div>
     );
