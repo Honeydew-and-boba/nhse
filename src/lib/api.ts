@@ -29,7 +29,8 @@ export interface FlagInfo { index: number; name: string; label: string; default:
 export interface AchievementInfo { index: number; name: string; label: string; tiers: number; thresholds: number[]; }
 export interface GameData {
   lang: string; items: string[]; named: boolean[]; kinds: number[]; kind_names: string[]; colors: number[]; sizes: number[];
-  field_items: FieldItemInfo[]; villagers: VillagerInfo[]; enums: Record<string, [string, number][]>; recipes: [number, number][];
+  field_items: FieldItemInfo[]; building_sizes: Record<string, [number, number]>;
+  villagers: VillagerInfo[]; enums: Record<string, [string, number][]>; recipes: [number, number][];
   achievements: AchievementInfo[]; flags_player: FlagInfo[]; flags_land: FlagInfo[]; flags_house: FlagInfo[];
   flags_villager: FlagInfo[]; flags_memory: FlagInfo[]; lists: Record<string, number[]>; mail: [string, string][];
   stationery: number[]; npc_senders: [number, string, string][]; box_skins: [number, string][]; mail_languages: string[];

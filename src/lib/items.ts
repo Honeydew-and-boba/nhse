@@ -70,6 +70,11 @@ export function footprint(gd: GameData, it: Item): [number, number] {
   return [w, h];
 }
 
+/** Plot of a building in terrain tiles (16 per acre). Building x/y is its centre in item tiles. */
+export function buildingFootprint(gd: GameData, kind: number): [number, number] {
+  return gd.building_sizes[kind] ?? [2, 2];
+}
+
 export const hex = (n: number, w = 4) => n.toString(16).toUpperCase().padStart(w, "0");
 
 // ---------------------------------------------------------------- search

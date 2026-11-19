@@ -51,6 +51,7 @@ Windows 10/11).
 - The save format is byte-exact and cross-checked against the original C# NHSE. Do not change read/write layout without evidence; add a test in `nhse-core` when touching it.
 - GPL-3.0-or-later. This is a rewrite of Kaphotics' NHSE; upstream exchange file formats are intentionally compatible.
 - Never silently destroy user save data: the existing backup-on-open and single-commit-on-save behaviour is a hard requirement.
+- `save/` is a real v3.0.3 save (revision 34) excluded through `.git/info/exclude`, used for local probing; never commit it or other save data.
 
 ## Design editor
 
@@ -63,6 +64,16 @@ Windows 10/11).
 - The editor paints transparency as palette index 15; the checkerboard swatch beside the palette
   selects it and Pick reads it from empty pixels. Pixel-only undo/redo is `Ctrl/Cmd+Z`,
   `Ctrl/Cmd+Shift+Z`, `Ctrl+Y` (one step per stroke, 64 deep, reset on reload).
+
+## Map editor
+
+- Building `x`/`y` are the **centre** of the structure in absolute map item tiles (32 per acre, whole map 288×256). Plot sizes live in `crates/nhse-core/src/structs/building.rs::footprint` in **terrain** tiles (16 per acre), so the footprint spans `x ± w`, `y ± h` item tiles. The UI reads the table from `gd.building_sizes` (set in `src-tauri/src/cmd/data.rs`) via `buildingFootprint()` in `src/lib/items.ts`.
+- `src/pages/MapEditor.tsx` draws each building as a filled rectangle with a white edge and a label underneath, and Select hit-tests the whole plot. Fill/border use the plot coordinates directly, so a moved X/Y shows up immediately.
+- Verified against the real save on 2026-11-19: PlayerHouse1 at (121,134) → item 116..126 × 130..138 = terrain 58..63 × 65..69, exactly the 5×4 inside the 7×6 path boundary around the house, with the dark-soil door at the bottom-centre tile. Nook's Cranny (7×4) and the museum (7×4) line up with their darksoil entrance paths the same way.
+- Dimensions from the in-game plots: player 5×4, villager 4×4, Nook's Cranny 7×4, museum 7×4, Able Sisters 5×4, campsite 4×4, Resident Services 6×3 (its 12×10-item plaza is a separate structure). Airport, tent, Redd, studio, hotel, bridge and incline are still approximations — verify before trusting them.
+- Status (2026-11-19): builds clean and the user confirmed the rectangles/positions look right in the app. **Not yet tested in-game** and no save data layout changed — the footprint table is draw-only.
+- Next steps for this feature: visually verify the remaining building positions/sizes in the editor, then add door/entrance markers and click-and-drag moving (the Buildings panel still edits X/Y numerically). Snapping a moved building to the terrain grid is also not implemented.
+- Data quirk: the plaza is 12×10 item tiles (6×5 terrain) at `Plaza { x, z }` top-left; do not confuse it with the 6×3 Resident Services plot. Player-house plots have parity `x % 2 == w % 2` and `y % 2 == h % 2` (item vs terrain alignment); keep that in mind for future drag/snap code.
 
 ## Platform status
 
@@ -119,9 +130,14 @@ Not done yet on Windows:
 
 - Save compatibility with **Switch 1** saves (`main.dat` from the original Switch, not just Switch 2 dumps). One real Switch 1 dump round-tripped on Windows (open → edit → save → emulator loads it), so this looks good; still verify other revisions before claiming support.
 - Possible feature expansion: **custom designs** and **map editing** (both already exist on desktop — extend rather than rebuild).
+- **Map editor QoL** (in progress on `map-editor-qol`): buildings now draw as their real footprint rectangles. Next: verify the remaining building dimensions in the app, then add entrance/door markers and click-and-drag moving.
 
-Branches (2026-11-18): `windows-build` was merged upstream as `f85aee6` (PR #4); local `master` tracks
-`upstream/master`. `design-pattern-qol` (pushed to `origin`) carries the `.acnh` import and usage-flag
-fix plus the editor QoL work (transparent swatch, undo/redo); details in `docs/designs.md`.
+Branches (2026-11-19): local `master` tracks `upstream/master` at `f85aee6` (the `windows-build`
+merge); `windows-build` is a stale local branch. `design-pattern-qol` is 4 commits ahead of
+`master`, local only (the old `origin` branch is gone), and carries the `.acnh` import, usage-flag
+fix and editor QoL work; details in `docs/designs.md`. `map-editor-qol` is branched from
+`design-pattern-qol` and adds the building footprint rectangles described under “Map editor”.
+`origin` (`Honeydew-and-boba/nhse`) currently has only `master`; neither QoL branch has been pushed.
 
 Remotes: `origin` is my fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.
+Do not push, open PRs or touch upstream unless explicitly asked.

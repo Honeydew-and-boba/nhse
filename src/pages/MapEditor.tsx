@@ -8,7 +8,7 @@ import { enumOptions, prettify } from "../components/Widgets";
 import { api, type Arrangement, type Building, type ClearKind, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
-import { EXT_ID, NONE_ID, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
+import { EXT_ID, NONE_ID, buildingFootprint, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
 import { useGD, useStore } from "../lib/store";
 import { MOD } from "../lib/util";
 
@@ -233,23 +233,27 @@ export default function MapEditor() {
         ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 2;
         for (const [x, y] of floating) ctx.strokeRect(ox + x * s, oy + y * s, s, s);
       }
-      // buildings
+      // buildings: x/y is the centre of a plot measured in terrain tiles (16 per acre),
+      // so the footprint spans x ± width and y ± height in item tiles (32 per acre).
       if (show.buildings && buildings) {
         ctx.font = `600 ${Math.max(10, Math.min(13, s * 2))}px Inter, system-ui`;
         ctx.textAlign = "center";
         buildings.forEach((b, i) => {
           if (!b.kind) return;
-          const cx = px + b.x * s, cy = py + b.y * s, r = Math.max(5, 3 * s);
-          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fillStyle = i === selBuilding ? "rgba(255,170,0,0.85)" : "rgba(30,30,40,0.55)";
-          ctx.fill();
-          ctx.strokeStyle = i === selBuilding ? "#fff" : "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.5; ctx.stroke();
+          const [fw, fh] = buildingFootprint(gd, b.kind);
+          const w = fw * 2 * s, h = fh * 2 * s;
+          const x = px + (b.x - fw) * s, y = py + (b.y - fh) * s;
+          const sel = i === selBuilding;
+          ctx.fillStyle = sel ? "rgba(255,170,0,0.45)" : "rgba(30,30,40,0.25)";
+          ctx.fillRect(x, y, w, h);
+          ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.5;
+          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
           if (s >= 2) {
             const label = buildingName(b.kind);
             ctx.fillStyle = "rgba(0,0,0,0.55)";
             const tw = ctx.measureText(label).width + 8;
-            ctx.fillRect(cx - tw / 2, cy + r + 2, tw, 16);
-            ctx.fillStyle = "#fff"; ctx.fillText(label, cx, cy + r + 14);
+            ctx.fillRect(x + w / 2 - tw / 2, y + h + 2, tw, 16);
+            ctx.fillStyle = "#fff"; ctx.fillText(label, x + w / 2, y + h + 14);
           }
         });
         ctx.textAlign = "start";
@@ -329,7 +333,12 @@ export default function MapEditor() {
     }
     if (tool === "inspect") {
       if (show.buildings && buildings) {
-        const hit = buildings.findIndex((b) => b.kind && Math.hypot(view.x + b.x * view.s - cx, view.y + b.y * view.s - cy) <= Math.max(5, 3 * view.s));
+        const mx = tx + L.offset_x, my = ty + L.offset_y;
+        const hit = buildings.findIndex((b) => {
+          if (!b.kind) return false;
+          const [fw, fh] = buildingFootprint(gd, b.kind);
+          return mx >= b.x - fw && mx < b.x + fw && my >= b.y - fh && my < b.y + fh;
+        });
         if (hit >= 0) { setSelBuilding(hit); setPanel("buildings"); return; }
       }
       if (inLayer(tx, ty)) { setSelTile(grid().rootOf(tx, ty) ?? [tx, ty]); setPanel("tile"); }
