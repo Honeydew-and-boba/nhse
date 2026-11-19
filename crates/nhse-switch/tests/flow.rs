@@ -33,7 +33,13 @@ fn read_dir_bytes(p: &Path) -> Vec<(String, Vec<u8>)> {
             if e.path().is_dir() {
                 stack.push(e.path());
             } else {
-                let rel = e.path().strip_prefix(p).unwrap().display().to_string().replace('\\', "/");
+                let rel = e
+                    .path()
+                    .strip_prefix(p)
+                    .unwrap()
+                    .display()
+                    .to_string()
+                    .replace('\\', "/");
                 out.push((rel, std::fs::read(e.path()).unwrap()));
             }
         }
