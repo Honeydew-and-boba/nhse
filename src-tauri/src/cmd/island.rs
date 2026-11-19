@@ -444,6 +444,11 @@ pub fn import_design(
             let p = s.player_profile(0)?;
             design::set_author(&mut d, p.town_id, &p.town_name, p.player_id, &p.name);
         }
+        // acpatterns writes a usage value the game rejects. The flag slot keeps the value the
+        // game itself wrote (0xEE04 on a dumped flag), so only player patterns are normalized.
+        if !matches!(kind, DesignKind::Flag) {
+            design::normalize_usage(&mut d, is_pro(kind));
+        }
         Ok(s.set_design_raw(kind, index, &d)?)
     })
 }

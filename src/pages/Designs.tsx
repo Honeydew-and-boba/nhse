@@ -5,8 +5,10 @@ import { api, type DesignKind, type DesignPixels } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { asset } from "../lib/items";
 import { useLoad, useStore } from "../lib/store";
+import { MOD } from "../lib/util";
 
 const SHEETS = ["Front", "Back", "Right", "Left"];
+const CHECKER = "conic-gradient(#cdcdcd 25%, #ebebeb 0 50%, #cdcdcd 0 75%, #ebebeb 0)";
 
 export default function Designs() {
   const { touch, toast, rev, player, save, confirm } = useStore();
@@ -60,7 +62,14 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   const [dirty, setDirty] = useState(false);
   const canvas = useRef<HTMLCanvasElement>(null);
   const painting = useRef(false);
-  const load = () => api.designPixels(kind, index).then((x) => { setD(x); setDirty(false); });
+  const stroke = useRef(false);
+  // Whole-array snapshots; `d.pixels` is never mutated in place.
+  const hist = useRef<{ past: number[][]; future: number[][] }>({ past: [], future: [] });
+  const load = () => api.designPixels(kind, index).then((x) => {
+    setD(x);
+    setDirty(false);
+    hist.current = { past: [], future: [] };
+  });
   useEffect(() => { load(); }, [kind, index]);
   const sheets = d ? d.pixels.length / 1024 : 1;
 
@@ -79,7 +88,41 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     ctx.putImageData(img, 0, 0);
   }, [d, sheet]);
 
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      const key = e.key.toLowerCase();
+      if (key === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if (key === "y") { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [d]);
+
   if (!d) return null;
+  const remember = () => {
+    if (stroke.current) return;
+    stroke.current = true;
+    hist.current.past.push(d.pixels);
+    if (hist.current.past.length > 64) hist.current.past.shift();
+    hist.current.future = [];
+  };
+  const undo = () => {
+    const prev = hist.current.past.pop();
+    if (!prev) return;
+    hist.current.future.unshift(d.pixels);
+    setD({ ...d, pixels: prev });
+    setDirty(true);
+  };
+  const redo = () => {
+    const next = hist.current.future.shift();
+    if (!next) return;
+    hist.current.past.push(d.pixels);
+    setD({ ...d, pixels: next });
+    setDirty(true);
+  };
   const pos = (e: React.MouseEvent) => {
     const r = (e.target as HTMLCanvasElement).getBoundingClientRect();
     return [Math.floor(((e.clientX - r.left) / r.width) * 32), Math.floor(((e.clientY - r.top) / r.height) * 32)];
@@ -89,11 +132,12 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     const base = sheet * 1024;
     const px = d.pixels.slice();
     const i = base + y * 32 + x;
-    if (tool === "pick") { if (px[i] < 15) setColor(px[i]); setTool("pencil"); return; }
+    if (tool === "pick") { setColor(px[i]); setTool("pencil"); return; }
     const v = tool === "erase" ? 15 : color;
     if (tool === "fill") {
       const target = px[i];
       if (target === v) return;
+      remember();
       const stack = [[x, y]];
       while (stack.length) {
         const [cx, cy] = stack.pop()!;
@@ -105,6 +149,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
       }
     } else {
       if (px[i] === v) return;
+      remember();
       px[i] = v;
     }
     setD({ ...d, pixels: px }); setDirty(true);
@@ -131,32 +176,40 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
         <div className="col" style={{ gap: 10 }}>
           {sheets > 1 && <Segmented value={sheet} onChange={setSheet} options={SHEETS.map((l, i) => ({ value: i, label: l }))} />}
           <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", cursor: "crosshair" }}
-            onMouseDown={(e) => { painting.current = true; const [x, y] = pos(e); apply(x, y); }}
+            onMouseDown={(e) => { painting.current = true; stroke.current = false; const [x, y] = pos(e); apply(x, y); }}
             onMouseMove={(e) => { if (painting.current && (tool === "pencil" || tool === "erase")) { const [x, y] = pos(e); apply(x, y); } }}
             onMouseUp={() => (painting.current = false)} onMouseLeave={() => (painting.current = false)} />
         </div>
         <div className="col" style={{ gap: 14 }}>
           <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { setD({ ...d, info: { ...d.info, name: v } }); setDirty(true); }} /></Field>
-          <Field label="Tool">
+          <Field label="Tool" hint={`${MOD}+Z undo · ${MOD}+Shift+Z redo`}>
             <Segmented value={tool} onChange={setTool} options={[
               { value: "pencil", label: "Draw", icon: <Pencil /> }, { value: "fill", label: "Fill", icon: <PaintBucket /> },
               { value: "pick", label: "Pick", icon: <Pipette /> }, { value: "erase", label: "Erase", icon: <Eraser /> }]} />
           </Field>
           <Field label={<><Droplet size={13} /> Palette</>} hint="Click to select · double-click the swatch below to change its color">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 36px)", gap: 6 }}>
-              {d.palette.map((c, i) => (
-                <button key={i} onClick={() => { setColor(i); if (tool === "erase" || tool === "pick") setTool("pencil"); }}
-                  style={{ width: 36, height: 36, borderRadius: 9, background: hexc(c), border: i === color ? "3px solid var(--accent)" : "1px solid var(--border-strong)", boxShadow: i === color ? "0 0 0 3px var(--accent-soft)" : undefined }} />
-              ))}
+            <div className="row" style={{ gap: 6, alignItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 36px)", gap: 6 }}>
+                {d.palette.map((c, i) => (
+                  <button key={i} onClick={() => { setColor(i); if (tool === "erase" || tool === "pick") setTool("pencil"); }}
+                    style={{ width: 36, height: 36, borderRadius: 9, background: hexc(c), border: i === color ? "3px solid var(--accent)" : "1px solid var(--border-strong)", boxShadow: i === color ? "0 0 0 3px var(--accent-soft)" : undefined }} />
+                ))}
+              </div>
+              <button title="Transparent" aria-label="Transparent" onClick={() => { setColor(15); if (tool === "erase" || tool === "pick") setTool("pencil"); }}
+                style={{ width: 36, height: 36, borderRadius: 9, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: color === 15 ? "3px solid var(--accent)" : "1px solid var(--border-strong)", boxShadow: color === 15 ? "0 0 0 3px var(--accent-soft)" : undefined }} />
             </div>
           </Field>
           <div className="row">
-            <input type="color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
-              onChange={(e) => {
-                const v = e.target.value; const rgb: [number, number, number] = [1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16)) as [number, number, number];
-                const pal = d.palette.slice(); pal[color] = rgb; setD({ ...d, palette: pal }); setDirty(true);
-              }} />
-            <span className="small muted">Color {color + 1} · {hexc(d.palette[color]).toUpperCase()}</span>
+            {color < 15 ? (
+              <input type="color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
+                onChange={(e) => {
+                  const v = e.target.value; const rgb: [number, number, number] = [1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16)) as [number, number, number];
+                  const pal = d.palette.slice(); pal[color] = rgb; setD({ ...d, palette: pal }); setDirty(true);
+                }} />
+            ) : (
+              <span style={{ width: 48, height: 32, borderRadius: 6, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: "1px solid var(--border-strong)" }} />
+            )}
+            <span className="small muted">{color < 15 ? `Color ${color + 1} · ${hexc(d.palette[color]).toUpperCase()}` : "Transparent · erases pixels"}</span>
           </div>
           <div className="tiny faint">Author: {d.info.player_name || "—"} ({d.info.town_name || "—"})</div>
         </div>
