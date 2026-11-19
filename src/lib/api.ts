@@ -30,6 +30,7 @@ export interface AchievementInfo { index: number; name: string; label: string; t
 export interface GameData {
   lang: string; items: string[]; named: boolean[]; kinds: number[]; kind_names: string[]; colors: number[]; sizes: number[];
   field_items: FieldItemInfo[]; building_sizes: Record<string, [number, number]>;
+  building_doors: Record<string, [number, number, number, number][]>; movable_buildings: number[];
   villagers: VillagerInfo[]; enums: Record<string, [string, number][]>; recipes: [number, number][];
   achievements: AchievementInfo[]; flags_player: FlagInfo[]; flags_land: FlagInfo[]; flags_house: FlagInfo[];
   flags_villager: FlagInfo[]; flags_memory: FlagInfo[]; lists: Record<string, number[]>; mail: [string, string][];

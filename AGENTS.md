@@ -2,12 +2,6 @@
 
 Handoff notes for AI sessions in this repo.
 
-## Working rules (from my global AGENTS.md)
-
-- I am a BSEE student and hobbyist developer. Explain an unfamiliar concept briefly the first time it matters.
-- When you are stuck, facing a design trade-off, or unsure after one failed attempt, stop and ask (`ask_advisor`) with a specific question instead of guessing.
-- Prefer the standard library and tools already installed in the project over new dependencies.
-
 ## What this project is
 
 NHSE is a save editor for **Animal Crossing: New Horizons**, rewritten in Rust with a native
@@ -21,7 +15,7 @@ It edits save data dumped from a console; it never dumps saves itself. Covers ga
 - `src-tauri` — desktop backend (Tauri commands, backups, image protocol). Entry: `src-tauri/src/lib.rs`.
 - `src` — React + TypeScript UI (`pages/`, `components/`, `lib/`).
 - `crates/nhse-switch` + `switch` — Switch 2 homebrew app (`nhse.nro`), see `switch/README.md`.
-- `docs` — longer reference notes; design pattern format: `docs/designs.md`.
+- `docs` — longer reference notes; design patterns: `docs/designs.md`; map editor: `docs/map-editor.md`.
 
 ## Commands
 
@@ -55,25 +49,11 @@ Windows 10/11).
 
 ## Design editor
 
-- Design files are raw save slices: `.nhd` = `0x2A8`, `.nhpd` = `0x8A8` (`NORMAL_SIZE`/`PRO_SIZE` in
-  `crates/nhse-core/src/structs/design.rs`). acpatterns.com's `.acnh` is the same layout and is
-  accepted by the import dialog (`F.nhd` in `src/lib/dialog.ts`).
-- `import_design` rewrites the author to player 1, then `design::normalize_usage` fixes the
-  ownership/placement flag (`0x70`) to `0xEE00`/`0xEE02`. The island flag slot is skipped because the
-  game writes `0xEE04` there. Full byte layout: `docs/designs.md`.
-- The editor paints transparency as palette index 15; the checkerboard swatch beside the palette
-  selects it and Pick reads it from empty pixels. Pixel-only undo/redo is `Ctrl/Cmd+Z`,
-  `Ctrl/Cmd+Shift+Z`, `Ctrl+Y` (one step per stroke, 64 deep, reset on reload).
+Design file format, import rules and editor behaviour: see `docs/designs.md`.
 
 ## Map editor
 
-- Building `x`/`y` are the **centre** of the structure in absolute map item tiles (32 per acre, whole map 288×256). Plot sizes live in `crates/nhse-core/src/structs/building.rs::footprint` in **terrain** tiles (16 per acre), so the footprint spans `x ± w`, `y ± h` item tiles. The UI reads the table from `gd.building_sizes` (set in `src-tauri/src/cmd/data.rs`) via `buildingFootprint()` in `src/lib/items.ts`.
-- `src/pages/MapEditor.tsx` draws each building as a filled rectangle with a white edge and a label underneath, and Select hit-tests the whole plot. Fill/border use the plot coordinates directly, so a moved X/Y shows up immediately.
-- Verified against the real save on 2026-11-19: PlayerHouse1 at (121,134) → item 116..126 × 130..138 = terrain 58..63 × 65..69, exactly the 5×4 inside the 7×6 path boundary around the house, with the dark-soil door at the bottom-centre tile. Nook's Cranny (7×4) and the museum (7×4) line up with their darksoil entrance paths the same way.
-- Dimensions from the in-game plots: player 5×4, villager 4×4, Nook's Cranny 7×4, museum 7×4, Able Sisters 5×4, campsite 4×4, Resident Services 6×3 (its 12×10-item plaza is a separate structure). Airport, tent, Redd, studio, hotel, bridge and incline are still approximations — verify before trusting them.
-- Status (2026-11-19): builds clean and the user confirmed the rectangles/positions look right in the app. **Not yet tested in-game** and no save data layout changed — the footprint table is draw-only.
-- Next steps for this feature: visually verify the remaining building positions/sizes in the editor, then add door/entrance markers and click-and-drag moving (the Buildings panel still edits X/Y numerically). Snapping a moved building to the terrain grid is also not implemented.
-- Data quirk: the plaza is 12×10 item tiles (6×5 terrain) at `Plaza { x, z }` top-left; do not confuse it with the 6×3 Resident Services plot. Player-house plots have parity `x % 2 == w % 2` and `y % 2 == h % 2` (item vs terrain alignment); keep that in mind for future drag/snap code.
+Coordinates, footprints, doors, drag behaviour and warnings: see `docs/map-editor.md`.
 
 ## Platform status
 
@@ -130,13 +110,14 @@ Not done yet on Windows:
 
 - Save compatibility with **Switch 1** saves (`main.dat` from the original Switch, not just Switch 2 dumps). One real Switch 1 dump round-tripped on Windows (open → edit → save → emulator loads it), so this looks good; still verify other revisions before claiming support.
 - Possible feature expansion: **custom designs** and **map editing** (both already exist on desktop — extend rather than rebuild).
-- **Map editor QoL** (in progress on `map-editor-qol`): buildings now draw as their real footprint rectangles. Next: verify the remaining building dimensions in the app, then add entrance/door markers and click-and-drag moving.
+- **Map editor QoL** (in progress on `map-editor-qol`): buildings draw as their real footprints with doors, a drag handle and fixed-building warnings. Next: verify in-game, fill in the remaining building sizes/doors, and test rotated buildings.
+- **Map editor polish** (not started): shop fill colours blend into the grass (green); door markers look neither grabbable nor like doors; custom design path patterns are not drawn correctly in the map editor.
 
 Branches (2026-11-19): local `master` tracks `upstream/master` at `f85aee6` (the `windows-build`
 merge); `windows-build` is a stale local branch. `design-pattern-qol` is 4 commits ahead of
 `master`, local only (the old `origin` branch is gone), and carries the `.acnh` import, usage-flag
 fix and editor QoL work; details in `docs/designs.md`. `map-editor-qol` is branched from
-`design-pattern-qol` and adds the building footprint rectangles described under “Map editor”.
+`design-pattern-qol` and adds the footprint, door, drag and warning work in `docs/map-editor.md`.
 `origin` (`Honeydew-and-boba/nhse`) currently has only `master`; neither QoL branch has been pushed.
 
 Remotes: `origin` is my fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.

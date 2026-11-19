@@ -75,6 +75,11 @@ export function buildingFootprint(gd: GameData, kind: number): [number, number] 
   return gd.building_sizes[kind] ?? [2, 2];
 }
 
+/** Entrance rectangles as `[dx, dy, w, h]` in item tiles from the building centre. */
+export type DoorRect = [number, number, number, number];
+export const buildingDoors = (gd: GameData, kind: number): DoorRect[] => gd.building_doors[kind] ?? [];
+export const buildingMovable = (gd: GameData, kind: number) => gd.movable_buildings.includes(kind);
+
 export const hex = (n: number, w = 4) => n.toString(16).toUpperCase().padStart(w, "0");
 
 // ---------------------------------------------------------------- search
