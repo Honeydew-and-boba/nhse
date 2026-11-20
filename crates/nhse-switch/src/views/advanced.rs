@@ -277,7 +277,7 @@ impl View for DesignList {
                 Row::new(format!(
                     "{}: {}",
                     i + 1,
-                    design::info(d, i, self.kind == DesignKind::Pro).name
+                    design::info(d, i, self.kind.is_pro()).name
                 ))
             })
             .collect()
@@ -338,7 +338,7 @@ impl View for DesignEdit {
         let d = cx.save().design_raw(self.kind, self.index).unwrap();
         let p = design::palette(d);
         vec![
-            Row::new("Name").value(design::info(d, self.index, self.kind == DesignKind::Pro).name),
+            Row::new("Name").value(design::info(d, self.index, self.kind.is_pro()).name),
             Row::new("Sheet").value(self.sheet.to_string()),
             Row::new("Pixel X").value(self.x.to_string()),
             Row::new("Pixel Y").value(self.y.to_string()),
@@ -384,7 +384,7 @@ impl View for DesignEdit {
                     return Nav::Stay;
                 }
                 if let Some((_, _, rgba)) = nhse_core::map::render::decode_png(&bytes) {
-                    let count = design::sheets(self.kind == DesignKind::Pro);
+                    let count = design::sheets(self.kind.is_pro());
                     let mut sheets: Vec<_> =
                         (0..count).map(|i| design::render_rgba(&d, i)).collect();
                     sheets[self.sheet] = rgba;
@@ -417,7 +417,7 @@ impl View for DesignEdit {
                 if let Some(n) = cx.ask_text(
                     "Design name",
                     "Up to 20 characters",
-                    &design::info(&d, self.index, self.kind == DesignKind::Pro).name,
+                    &design::info(&d, self.index, self.kind.is_pro()).name,
                     20,
                 ) {
                     design::set_name(&mut d, &n);
@@ -429,7 +429,7 @@ impl View for DesignEdit {
                 let (v, max) = match row {
                     1 => (
                         &mut self.sheet,
-                        if self.kind == DesignKind::Pro { 3 } else { 0 },
+                        (design::sheets(self.kind.is_pro()) - 1) as u64,
                     ),
                     2 => (&mut self.x, 31),
                     3 => (&mut self.y, 31),
@@ -682,29 +682,37 @@ impl View for Room {
     }
     fn reply(&mut self, cx: &mut Cx, r: Reply) -> Nav {
         if let Reply::Item(it) = r {
-            match cx.save().player_room(self.house, self.room) {
-                Ok(mut room) => {
-                    room.layers[self.layer][self.x * 20 + self.y] = it;
-                    let r = cx.save_mut().set_player_room(self.house, self.room, &room);
-                    if r.is_ok() {
-                        let mut raw = cx.save().player_room_raw(self.house, self.room).to_vec();
-                        nhse_core::structs::house::PlayerRoom::set_active(
-                            &mut raw,
-                            self.layer,
-                            self.x,
-                            self.y,
-                            !it.is_none(),
-                        );
-                        let r = cx
-                            .save_mut()
-                            .set_player_room_raw(self.house, self.room, &raw);
-                        result(cx, r);
-                    } else {
-                        result(cx, r);
-                    }
-                }
-                Err(e) => cx.toast_error(e.to_string()),
+            use nhse_core::map::grid::{ItemGrid, Placement};
+            use nhse_core::structs::house::{PlayerRoom, ROOM_DIM, ROOM_LAYER_SIZE};
+            use nhse_core::Item;
+
+            let mut raw = cx.save().player_room_raw(self.house, self.room).to_vec();
+            let offset = self.layer * ROOM_LAYER_SIZE;
+            let tiles = Item::read_array(&raw, offset, ROOM_DIM * ROOM_DIM);
+            let mut grid = ItemGrid::new(ROOM_DIM, ROOM_DIM, tiles);
+            let (x, y) = grid.root_of(self.x, self.y).unwrap_or((self.x, self.y));
+            grid.remove_at(x, y);
+            if !it.is_none() && grid.place(it, x, y, true, false) != Placement::Free {
+                cx.toast_error("The furniture does not fit here.");
+                return Nav::Stay;
             }
+            for (i, tile) in grid.tiles.iter().enumerate() {
+                let pos = offset + i * Item::SIZE;
+                if *tile != Item::read(&raw, pos) {
+                    tile.write(&mut raw, pos);
+                    PlayerRoom::set_active(
+                        &mut raw,
+                        self.layer,
+                        i / ROOM_DIM,
+                        i % ROOM_DIM,
+                        !tile.is_none(),
+                    );
+                }
+            }
+            let r = cx
+                .save_mut()
+                .set_player_room_raw(self.house, self.room, &raw);
+            result(cx, r);
         }
         Nav::Stay
     }
@@ -782,6 +790,9 @@ mod tests {
             y: 3,
             layer: 0,
         };
+        let mut empty_room = cx.save().player_room(0, 0).unwrap();
+        empty_room.layers[0].fill(nhse_core::Item::NONE);
+        cx.save_mut().set_player_room(0, 0, &empty_room).unwrap();
         room.reply(cx, Reply::Item(nhse_core::Item::new(1)));
         assert_eq!(cx.save().player_room(0, 0).unwrap().layers[0][43].id, 1);
         assert!(nhse_core::structs::house::PlayerRoom::is_active(
@@ -790,6 +801,34 @@ mod tests {
             2,
             3
         ));
+        let grid = nhse_core::map::grid::ItemGrid::new(
+            20,
+            20,
+            cx.save().player_room(0, 0).unwrap().layers.remove(0),
+        );
+        let extension = grid
+            .tiles
+            .iter()
+            .position(|tile| tile.is_extension())
+            .unwrap();
+        room.x = extension / 20;
+        room.y = extension % 20;
+        assert_eq!(grid.root_of(room.x, room.y), Some((2, 3)));
+        assert!(nhse_core::structs::house::PlayerRoom::is_active(
+            cx.save().player_room_raw(0, 0),
+            0,
+            room.x,
+            room.y
+        ));
+        room.reply(cx, Reply::Item(nhse_core::Item::new(100)));
+        assert_eq!(cx.save().player_room(0, 0).unwrap().layers[0][43].id, 100);
+        let before = cx.save().player_room_raw(0, 0).to_vec();
+        room.x = 2 - usize::from(extension / 20 > 2);
+        room.y = 3 - usize::from(extension % 20 > 3);
+        room.reply(cx, Reply::Item(nhse_core::Item::new(1)));
+        assert_eq!(cx.save().player_room_raw(0, 0), before);
+        room.x = 2;
+        room.y = 3;
         room.activate(cx, 4);
         assert!(!nhse_core::structs::house::PlayerRoom::is_active(
             cx.save().player_room_raw(0, 0),
@@ -797,6 +836,44 @@ mod tests {
             2,
             3
         ));
+        assert!(cx.save().player_room(0, 0).unwrap().layers[0]
+            .iter()
+            .all(|tile| tile.is_none()));
+        assert!(!nhse_core::structs::house::PlayerRoom::is_active(
+            cx.save().player_room_raw(0, 0),
+            0,
+            extension / 20,
+            extension % 20
+        ));
+        let mut tailor = DesignEdit {
+            kind: DesignKind::Tailor,
+            ..d
+        };
+        let png = root.join("design.png");
+        let colors = [
+            [20, 0, 0, 255],
+            [0, 40, 0, 255],
+            [0, 0, 60, 255],
+            [80, 80, 0, 255],
+        ];
+        let sheets = colors.map(|c| c.repeat(1024));
+        let mut raw = cx.save().design_raw(tailor.kind, 0).unwrap().to_vec();
+        design::import_rgba(&mut raw, &sheets);
+        cx.save_mut().set_design_raw(tailor.kind, 0, &raw).unwrap();
+        let new_sheet = [0, 120, 120, 255].repeat(1024);
+        std::fs::write(&png, nhse_core::map::render::encode_png(32, 32, &new_sheet)).unwrap();
+        let mut p = HostPlatform::new(root, &[], vec![], root);
+        p.keyboard
+            .extend([Some("3".into()), Some(png.display().to_string())]);
+        cx.platform = Box::new(p);
+        tailor.activate(cx, 1);
+        assert_eq!(tailor.sheet, 3);
+        tailor.activate(cx, 9);
+        let raw = cx.save().design_raw(tailor.kind, 0).unwrap();
+        for (i, expected) in sheets.iter().take(3).enumerate() {
+            assert_eq!(&design::render_rgba(raw, i), expected);
+        }
+        assert_eq!(design::render_rgba(raw, 3), new_sheet);
         let mut replacement = Replacement::new(0);
         replacement.names = vec!["cat00".into()];
         replacement.reply(cx, Reply::Confirmed(1));

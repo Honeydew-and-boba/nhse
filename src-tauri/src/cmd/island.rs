@@ -259,16 +259,12 @@ pub fn import_player_room(
 
 // --- designs -----------------------------------------------------------------------------
 
-fn is_pro(kind: DesignKind) -> bool {
-    matches!(kind, DesignKind::Pro | DesignKind::Tailor)
-}
-
 #[tauri::command]
 pub fn designs(state: State<AppState>, kind: DesignKind) -> CmdResult<Vec<DesignInfo>> {
     with_save!(state, |s| {
         let n = s.design_count(kind);
         (0..n)
-            .map(|i| Ok(design::info(s.design_raw(kind, i)?, i, is_pro(kind))))
+            .map(|i| Ok(design::info(s.design_raw(kind, i)?, i, kind.is_pro())))
             .collect()
     })
 }
@@ -289,7 +285,7 @@ pub fn design_pixels(
 ) -> CmdResult<DesignPixels> {
     with_save!(state, |s| {
         let d = s.design_raw(kind, index)?;
-        let pro = is_pro(kind);
+        let pro = kind.is_pro();
         let mut pixels = Vec::with_capacity(design::sheets(pro) * 1024);
         for sheet in 0..design::sheets(pro) {
             for y in 0..32 {
@@ -317,7 +313,7 @@ pub fn set_design_pixels(
 ) -> CmdResult<()> {
     with_save_mut!(state, |s| {
         let mut d = s.design_raw(kind, index)?.to_vec();
-        let pro = is_pro(kind);
+        let pro = kind.is_pro();
         design::set_name(&mut d, &name);
         design::set_palette(&mut d, &palette);
         for (i, p) in pixels.iter().enumerate().take(design::sheets(pro) * 1024) {
@@ -337,7 +333,7 @@ pub fn design_png(
 ) -> CmdResult<()> {
     with_save!(state, |s| {
         let d = s.design_raw(kind, index)?;
-        let pro = is_pro(kind);
+        let pro = kind.is_pro();
         let sc = scale.unwrap_or(8).clamp(1, 32);
         let sheets = design::sheets(pro);
         let (w, h) = (
@@ -377,7 +373,7 @@ pub fn import_design_png(
         );
     };
     with_save_mut!(state, |s| {
-        let pro = is_pro(kind);
+        let pro = kind.is_pro();
         let sheets = design::sheets(pro);
         let grid = if sheets == 4 { 2 } else { 1 };
         let mut sheet_imgs = Vec::new();
@@ -435,7 +431,7 @@ pub fn import_design(
             return err(format!(
                 "This file is {} bytes; a {} design is {} bytes.",
                 data.len(),
-                if is_pro(kind) { "PRO" } else { "normal" },
+                if kind.is_pro() { "PRO" } else { "normal" },
                 expect
             ));
         }
