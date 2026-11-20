@@ -214,6 +214,7 @@ export const api = {
   setFieldLayer: (layer: number, bytes: Uint8Array) => invoke<void>("set_field_layer", bytes, { headers: { "x-layer": String(layer) } }),
   terrain: async () => new Uint8Array(await call<ArrayBuffer>("terrain")),
   setTerrain: (bytes: Uint8Array) => invoke<void>("set_terrain", bytes),
+  paintRoad: (tiles: [number, number][], family: string | null) => call<number>("paint_road", { tiles, family }),
   terrainPng: async (px?: number) => new Uint8Array(await call<ArrayBuffer>("terrain_png", { px })),
   mapMeta: () => call<MapMeta>("map_meta"),
   setAcres: (acres: number[]) => call<void>("set_acres", { acres }),

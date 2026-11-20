@@ -2,8 +2,8 @@
 
 Notes on the building layer of `src/pages/MapEditor.tsx`. Footprints and doors are draw-only:
 no save layout changed. The code lives in
-`crates/nhse-core/src/structs/building.rs`, `src/pages/MapEditor.tsx` and
-`src-tauri/src/cmd/data.rs`.
+`crates/nhse-core/src/structs/building.rs`, `crates/nhse-core/src/map/paint.rs`,
+`src/pages/MapEditor.tsx` and `src-tauri/src/cmd/data.rs`.
 
 ## Coordinate conventions
 
@@ -115,6 +115,35 @@ Preview notes:
   edited design reloads when the page is reopened but not while it stays open.
 - Normal design slots are proven: `0 … pattern_count-1` (100 on 3.0) is a normal design index.
 
+## Painting paths and designs
+
+The Item panel has a **Ground** section under Brush: the eight default path families, the save's
+non-empty normal designs, an erase swatch and Stop. Choosing one puts the Place tool into ground
+mode; clicking or dragging paints one terrain tile (2×2 item tiles). Choosing an item, **Paint with
+it** or **Use as brush** returns to item placement. A stroke commits once on pointer release and is
+one normal undo entry (terrain and `MyDesignMap` are snapshotted together).
+
+Painting a default path writes `TerrainTile.road` and clears the design on that physical tile;
+painting a design writes `MyDesignMap` and clears the road. This matches the game, where one
+replaces the other. **Erase ground** clears both.
+
+Default path models come from the 8-way same-family neighbourhood:
+`map/paint.rs::road_autotile` turns the connected sides and filled outer corners into a
+`TerrainUnitModel` and `road_angle`. The table was measured from a real 3.0.3 save (70 placed path
+tiles) and matches all of them; a unit test covers ends, straights, corners, T-junctions, crossings
+and a painted run. Roads of different families do not join, which is also what the save shows. The
+game has no model for a crossing with exactly three filled corners, so that rare case uses the
+fully-filled crossing (`8A`).
+
+Coordinates: a layer tile maps to terrain tile
+`((x + field.offset_x) / 2 - 16, (y + field.offset_y) / 2 - 16)` because the terrain data covers the
+middle 7×6 acres. Designs use `(x / 2, y / 2)`, because `MyDesignMap` spans the field acres
+(144×96 on 3.0). Painting outside the terrain data therefore does nothing for paths; the pixel
+preview shows that.
+
+PRO designs are not offered yet (same unknown encoding as above). Normal design slots from
+`api.designs("normal")` are filtered to non-empty ones.
+
 ## Verified examples
 
 From the real save on 2026-11-19:
@@ -132,23 +161,26 @@ in-game test yet, and no save data layout changed.
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house
 body rectangles (`building.rs::body`), shop fills moved off green — they used to blend into the
-grass — to crimson `[211,61,61]` in `buildingColor()` in `src/pages/MapEditor.tsx`, and normal
-ground designs drawn from their thumbnails (with a View toggle and hover index).
+grass — to crimson `[211,61,61]` in `buildingColor()` in `src/pages/MapEditor.tsx`, normal
+ground designs drawn from their thumbnails (with a View toggle and hover index), and ground
+painting in the Item panel (`map/paint.rs` + the `paint_road` command): default paths autotile from
+their neighbours, normal designs paint straight onto `MyDesignMap`, both replace each other, and
+each stroke is one undo entry.
 
-Next: test in-game, verify the remaining building sizes/positions, fill in door data for the fixed
-structures, and check dragging on buildings with a non-zero `angle`.
+Next: test the painted paths and designs in-game, verify the remaining building sizes/positions,
+fill in door data for the fixed structures, and check dragging on buildings with a non-zero
+`angle`.
 
 ## Remaining goals (not started — handoff notes)
 
-1. **PRO ground-design previews.** Normal designs are drawn from their 32×32 thumbnails, but
-   the `MyDesignMap` encoding for placed PRO designs is still unknown, so those keep the magenta
-   marker. Measure it with a save that has a placed PRO design, then decode it the same way.
+1. **PRO ground-design previews and painting.** Normal designs are drawn and painted, but the
+   `MyDesignMap` encoding for placed PRO designs is still unknown, so those keep the magenta
+   marker and are absent from the ground palette. Measure it with a save that has a placed PRO
+   design, then decode it the same way.
 2. **Favourites section in the map editor.** Add a small palette of favourite patterns/paths for
    quick access while painting. It should reuse the existing item/pattern picker and persist per
-   save or app settings (check `settings` in `src/lib/store.ts`). No implementation started.
-3. **Path painting.** The map editor can inspect terrain and place items, but it cannot paint
-   terrain or lay custom-design paths; the Files tab only imports/exports whole dumps. Add brushes
-   for terrain/road families and placed designs, reusing the `MyDesignMap` and `TerrainTile`
-   structures. No implementation started.
-
-None of the remaining goals is implemented; keep them out of the "done" claims above.
+   save or app settings (check `settings` in `src/lib/store.tsx`). The ground palette is a good
+   place to hang it. No implementation started.
+3. **Terrain/water/cliff painting.** Ground painting covers the road layer and custom designs; it
+   does not change `TerrainTile.model` (rivers, cliffs, grass elevation). The Files tab still
+   imports and exports whole terrain dumps. No implementation started.

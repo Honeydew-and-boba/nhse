@@ -247,6 +247,7 @@ pub fn run() {
             cmd::map::terrain,
             cmd::map::set_terrain,
             cmd::map::terrain_png,
+            cmd::map::paint_road,
             cmd::map::map_meta,
             cmd::map::set_acres,
             cmd::map::set_plaza,
