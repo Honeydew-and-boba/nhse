@@ -35,7 +35,7 @@ no save layout changed. The code lives in
 | 21 | Museum | 7×4 | whole plot |
 | 22 | Airport | 10×6 (approximate) | whole plot |
 | 23 | Resident Services tent | 6×4 (approximate) | whole plot |
-| 24 | Able Sisters | 5×4 | whole plot |
+| 24 | Able Sisters | 5×4 | back 3 terrain rows + front row right of the door (10×6 + 6×2 items) |
 | 25 | Campsite | 4×4 | whole plot |
 | 26 | Bridge | 4×6 (approximate) | whole plot |
 | 27 | Incline | 2×5 (approximate) | whole plot |
@@ -52,6 +52,10 @@ Villager 4 is the reference for kinds 9–18: plot 90..97 × 142..149, house 90.
 (90..92 × 148..149 and 97 × 148..149) is open. The house body is `rect(-4, -4, 8, 6)` in
 `building.rs::VILLAGER_BODY`; `body()` returns nothing for kinds whose built part has not been
 measured, and those fall back to the whole plot.
+
+Able Sisters (24) has the opposite free corner: layer 62..65 × 104..105 (absolute 62..65 × 136..137
+for the save's building at 67,134) is open ground, while the rest of the front row is the shop
+front beside the door. Its body is `ABLES_BODY` = `rect(-5, -4, 10, 6)` + `rect(-1, 2, 6, 2)`.
 
 ## Doors and move handles
 
@@ -120,8 +124,8 @@ Preview notes:
 
 ## Painting paths and designs
 
-The Item panel has a **Ground** section under Brush: the eight default path families, the save's
-non-empty normal designs, an erase swatch and Stop. Choosing one puts the Place tool into ground
+The Item panel runs **Brush → Selected tile → Ground**. The **Ground** section holds the eight
+default path families, the save's non-empty normal designs, an erase swatch and Stop. Choosing one puts the Place tool into ground
 mode; clicking or dragging paints one terrain tile (2×2 item tiles). Choosing an item, **Paint with
 it** or **Use as brush** returns to item placement. A stroke commits once on pointer release and is
 one normal undo entry (terrain and `MyDesignMap` are snapshotted together).
@@ -163,12 +167,14 @@ in-game test yet, and no save data layout changed.
 
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house
-body rectangles (`building.rs::body`), shop fills moved off green — they used to blend into the
-grass — to crimson `[211,61,61]` in `buildingColor()` in `src/pages/MapEditor.tsx`, normal
-ground designs drawn from their thumbnails (with a View toggle and hover index), and ground
-painting in the Item panel (`map/paint.rs` + the `paint_road` command): default paths autotile from
-their neighbours, normal designs paint straight onto `MyDesignMap`, both replace each other, and
-each stroke is one undo entry.
+and Able Sisters body rectangles (`building.rs::body`; the free front corner is documented above),
+shop fills moved off green — they used to blend into the grass — to crimson `[211,61,61]` in
+`buildingColor()` in `src/pages/MapEditor.tsx`, normal ground designs drawn from their thumbnails
+(with a View toggle and hover index), ground painting in the Item panel (`map/paint.rs` + the
+`paint_road` command): default paths autotile from their neighbours, normal designs paint straight
+onto `MyDesignMap`, both replace each other, and each stroke is one undo entry. The Item panel puts
+the selected-tile editor above the ground palette, and building rotation is rejected in the UI and
+in `set_buildings`.
 
 Next: test the painted paths and designs in-game, verify the remaining building sizes/positions,
 fill in door data for the fixed structures, and check dragging on the bridge (the one building with

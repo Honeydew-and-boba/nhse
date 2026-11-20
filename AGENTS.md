@@ -113,11 +113,12 @@ Not done yet on Windows:
 
 - **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
   draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
-  first part of a multi-part door gets the glyph. Villager houses draw their built body
-  (`building.rs::body`) so the open front row stays clear. Buildings cannot be rotated: the Angle
-  field and `set_buildings` reject a change (`building.rs::angle_ok`), except for bridges and
-  inclines whose angle is real terrain data. Next: verify in-game, fill in the remaining building
-  sizes/doors, and check dragging the bridge.
+  first part of a multi-part door gets the glyph. Villager houses and Able Sisters draw their
+  measured built body (`building.rs::body`), leaving their open front ground clear. Buildings cannot
+  be rotated: the Angle field and `set_buildings` reject a change (`building.rs::angle_ok`), except
+  for bridges and inclines whose angle is real terrain data. The Item panel runs Brush → Selected
+  tile → Ground. Next: verify in-game, fill in the remaining building sizes/doors, and check
+  dragging the bridge.
 - **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
   their normal 32×32 thumbnails, with a hover index and a View toggle. PRO designs cannot be placed
   on the ground in game (mannequin/painting only), so values at or above `pattern_count` are an
@@ -134,7 +135,8 @@ Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-patter
 `.acnh` imports, usage-flag fix, design editor QoL). `windows-build` and `design-pattern-qol` were
 merged and deleted on `origin`; both still exist locally. Local `master` tracks `upstream/master` at
 `f85aee6` and trails `origin/master`. `map-editor-qol` carries the footprint, door, drag, warning,
-ground-design and path-painting work described in `docs/map-editor.md`.
+ground-design, path-painting, rotation-guard and Able Sisters body work described in
+`docs/map-editor.md`.
 
 Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.

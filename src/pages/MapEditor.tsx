@@ -828,6 +828,34 @@ export default function MapEditor() {
           </div>
         </div>
         <div className="divider" />
+        {selTile && selItem ? (
+          <div className="col" style={{ gap: 8 }}>
+            <div className="label">Selected tile · {acreLabel(selTile[0], selTile[1])} · X {selTile[0]} Y {selTile[1]}</div>
+            {selItem.id === NONE_ID ? <div className="faint small">Nothing here.</div> : selItem.id === EXT_ID ? (
+              <Callout kind="warn" title="Orphaned extension tile">This tile belongs to a multi-tile item that no longer exists. <Button size="sm" onClick={() => { snapshot(); grid().set(selTile[0], selTile[1], NONE_ITEM); changed(layer); sync(layer); }}>Remove it</Button></Callout>
+            ) : (
+              <>
+                <ItemEditor item={selItem} onChange={(it) => {
+                  const g = grid().clone();
+                  g.removeAt(gd, selTile[0], selTile[1]);
+                  if (it.id !== NONE_ID) {
+                    const fit = g.check(gd, it, selTile[0], selTile[1]);
+                    if (fit === "bounds" || (fit === "collision" && settings?.map_prevent_overlap)) { toast("warn", "The changed item doesn't fit here"); return; }
+                    g.place(gd, it, selTile[0], selTile[1], settings?.map_auto_extensions ?? true);
+                  }
+                  snapshot();
+                  layers.current[layer] = g.tiles;
+                  changed(layer); sync(layer);
+                }} />
+                <div className="row">
+                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
+                  <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => { snapshot(); grid().removeAt(gd, selTile[0], selTile[1]); changed(layer); sync(layer); setSelTile(null); }}>Remove</Button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : <div className="faint small">Use <b>Select</b> (<span className="kbd">V</span>) and click a tile to inspect and edit the item on it.</div>}
+        <div className="divider" />
         <div className="col" style={{ gap: 8 }}>
           <div className="row"><div className="label" style={{ flex: 1 }}>Ground</div><span className="tiny faint">paths and designs</span></div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
@@ -867,34 +895,6 @@ export default function MapEditor() {
               : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other. PRO designs can't be placed on the ground in game, so they aren't offered.</>}
           </div>
         </div>
-        <div className="divider" />
-        {selTile && selItem ? (
-          <div className="col" style={{ gap: 8 }}>
-            <div className="label">Selected tile · {acreLabel(selTile[0], selTile[1])} · X {selTile[0]} Y {selTile[1]}</div>
-            {selItem.id === NONE_ID ? <div className="faint small">Nothing here.</div> : selItem.id === EXT_ID ? (
-              <Callout kind="warn" title="Orphaned extension tile">This tile belongs to a multi-tile item that no longer exists. <Button size="sm" onClick={() => { snapshot(); grid().set(selTile[0], selTile[1], NONE_ITEM); changed(layer); sync(layer); }}>Remove it</Button></Callout>
-            ) : (
-              <>
-                <ItemEditor item={selItem} onChange={(it) => {
-                  const g = grid().clone();
-                  g.removeAt(gd, selTile[0], selTile[1]);
-                  if (it.id !== NONE_ID) {
-                    const fit = g.check(gd, it, selTile[0], selTile[1]);
-                    if (fit === "bounds" || (fit === "collision" && settings?.map_prevent_overlap)) { toast("warn", "The changed item doesn't fit here"); return; }
-                    g.place(gd, it, selTile[0], selTile[1], settings?.map_auto_extensions ?? true);
-                  }
-                  snapshot();
-                  layers.current[layer] = g.tiles;
-                  changed(layer); sync(layer);
-                }} />
-                <div className="row">
-                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
-                  <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => { snapshot(); grid().removeAt(gd, selTile[0], selTile[1]); changed(layer); sync(layer); setSelTile(null); }}>Remove</Button>
-                </div>
-              </>
-            )}
-          </div>
-        ) : <div className="faint small">Use <b>Select</b> (<span className="kbd">V</span>) and click a tile to inspect and edit the item on it.</div>}
         <div className="divider" />
         <div className="tiny faint" style={{ lineHeight: 1.7 }}>
           <span className="kbd">V</span> select · <span className="kbd">B</span> place · <span className="kbd">E</span> erase · <span className="kbd">M</span> area · <span className="kbd">H</span> pan · <span className="kbd">1</span>/<span className="kbd">2</span> layer · <span className="kbd">{MOD}Z</span> undo · <span className="kbd">{MOD}C</span>/<span className="kbd">{MOD}V</span> copy/paste area
