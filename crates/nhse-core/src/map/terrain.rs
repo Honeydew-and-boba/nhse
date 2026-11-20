@@ -73,17 +73,25 @@ pub fn road_family(m: u16) -> Option<&'static str> {
 
 pub type Rgb = [u8; 3];
 
+// One clear step per elevation level: the map editor must be readable at a glance.
 const GRASS: [Rgb; 4] = [
-    [76, 154, 74],
-    [92, 170, 84],
-    [108, 184, 96],
-    [124, 197, 110],
+    [70, 150, 72],
+    [104, 176, 88],
+    [146, 202, 104],
+    [190, 224, 130],
 ];
 const WATER: Rgb = [104, 196, 214];
 const WATER_DEEP: Rgb = [84, 176, 200];
 const SHORE: Rgb = [214, 199, 140];
-const CLIFF: [Rgb; 4] = [[66, 104, 62], [80, 118, 70], [94, 132, 80], [108, 146, 92]];
-const CLIFF_EDGE: Rgb = [52, 72, 48];
+// The game's cliffs are dirt/peach, not green. Keeping them distinct from grass also makes
+// height differences obvious in the map preview.
+const CLIFF: [Rgb; 4] = [
+    [172, 128, 96],
+    [186, 142, 108],
+    [200, 156, 120],
+    [214, 170, 134],
+];
+const CLIFF_EDGE: Rgb = [120, 86, 64];
 const FALL: Rgb = [134, 214, 236];
 const FOAM: Rgb = [235, 250, 255];
 

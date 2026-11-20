@@ -11,7 +11,8 @@ export default defineConfig({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-    watch: { ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**"] },
+    // save/ holds dumps the emulator may keep open; watching it crashes Vite with EBUSY
+    watch: { ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**", "**/save/**"] },
   },
   build: {
     target: "safari15",

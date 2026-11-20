@@ -127,9 +127,14 @@ Not done yet on Windows:
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
   save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
   Next: test painted paths and designs in-game. Notes in `docs/map-editor.md`.
-- **Map editor: terrain/water/cliff painting** (not started): only the road layer and ground
-  designs are painted; `TerrainTile.model` (rivers, cliffs, elevation) is still import/export only.
-  Notes in `docs/map-editor.md`.
+- **Map editor: terrain painting**: in — rivers (8-way banks), raise/lower with generated faces,
+  straight one-level falls, the 0–3 limit, the two-level-step refusal, the tree/building warning, the
+  Rounded/Sharp corner choice and semi-manual fall models; see `docs/map-editor.md`.
+  **Experimental:** only a single 1×1 cliff raise has been loaded in game (2026-11-20). Rivers,
+  multi-tile cliffs, heights 2–3, waterfalls and the sharp corner style are untested in game. Open:
+  in-game verification of painted paths/designs and terrain; the unmeasured river nub/junction shapes
+  (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); automatic corner and multi-level waterfalls; the unmeasured
+  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
 
 Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-pattern-qol` (PR #1:
 `.acnh` imports, usage-flag fix, design editor QoL). `windows-build` and `design-pattern-qol` were

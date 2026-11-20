@@ -1,4 +1,4 @@
-import { Brush, Building2, Check as CheckIcon, Eye, ClipboardPaste, Copy, Crosshair, Download, Droplets, Eraser, Grid3x3, Hand, Layers, Map as MapIcon, MousePointer2, Redo2, Replace, RotateCw, Scissors, Sparkles, SquareDashed, Trash2, Undo2, Upload, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowDown, ArrowUp, Brush, Building2, Check as CheckIcon, Eye, ClipboardPaste, Copy, Crosshair, Download, Droplets, Eraser, Grid3x3, Hand, Layers, Map as MapIcon, MousePointer2, Redo2, Replace, RotateCw, Scissors, Sparkles, SquareDashed, Trash2, Undo2, Upload, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PasteListModal } from "../components/ItemGridEditor";
 import { ItemEditor } from "../components/ItemEditor";
@@ -16,6 +16,7 @@ type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
 type Pick = { kind: "building"; index: number } | null;
 type GroundBrush = { kind: "path"; family: string } | { kind: "design"; index: number } | { kind: "erase" };
+type TerrainBrush = { kind: "water" } | { kind: "water-erase" } | { kind: "cliff"; delta: number } | { kind: "shape"; model: number; angle: number };
 type Snapshot = { layer: number; tiles: Item[] } | { ground: { terrain: Uint8Array; designs: number[] } };
 interface View { s: number; x: number; y: number }
 
@@ -29,6 +30,38 @@ const PATHS = [
   { id: "sand", label: "Sand", color: "#e2c48c" },
   { id: "tile", label: "Tile", color: "#5e84b2" },
   { id: "wood", label: "Wood", color: "#aa784a" },
+];
+/** Verified terrain models offered by the manual shape fixer, with plain-language labels. */
+const TERRAIN_SHAPES: [name: string, label: string][] = [
+  ["River0A", "Spring (single water tile)"],
+  ["River1A", "River end (one side open)"],
+  ["River2A", "Straight river"],
+  ["River3B", "Rounded river bend"],
+  ["River3C", "Sharp river bend"],
+  ["River5B", "River junction (three sides)"],
+  ["River7A", "Wide river, one dry corner"],
+  ["River8A", "Open water (all sides)"],
+  ["Cliff0A", "Free-standing 1×1 pillar"],
+  ["Cliff1A", "Cliff end (one connected side)"],
+  ["Cliff2A", "1-wide cliff ridge"],
+  ["Cliff3B", "Rounded outside corner"],
+  ["Cliff3C", "Sharp outside corner"],
+  ["Cliff5B", "Straight cliff edge"],
+  ["Cliff7A", "Cliff edge with a sunken diagonal"],
+  ["Cliff8", "Flat top, no edges"],
+  ["Fall200", "Fall strip end, counter-clockwise side"],
+  ["Fall300", "Fall strip end, clockwise side"],
+  ["Fall400", "Fall strip middle, or a one-tile fall"],
+  ["Fall204", "Cascade top, counter-clockwise end"],
+  ["Fall304", "Cascade top, clockwise end"],
+  ["Fall408", "Cascade top, middle"],
+  ["Fall208", "Cascade bottom, north end (east drop)"],
+  ["Fall302", "Cascade bottom, south end (east drop)"],
+  ["Fall422", "Cascade bottom, 2nd from north (east drop)"],
+  ["Fall403", "Cascade bottom, middle"],
+  ["Fall308", "Cascade bottom, north end (west drop)"],
+  ["Fall202", "Cascade bottom, south end (west drop)"],
+  ["Fall421", "Cascade bottom, 2nd from north (west drop)"],
 ];
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
 const PLAZA_W = 24, PLAZA_H = 20; // 12×10 terrain tiles
@@ -117,16 +150,23 @@ export default function MapEditor() {
   const [rect, setRect] = useState<Rect | null>(null);
   const [brush, setBrush] = useState<Item>({ ...NONE_ITEM });
   const [ground, setGround] = useState<GroundBrush | null>(null);
+  const [tbrush, setTbrush] = useState<TerrainBrush | null>(null);
+  const [terrainSize, setTerrainSize] = useState(1);
+  const [sharp, setSharp] = useState(false);
+  const [shape, setShape] = useState({ model: 0, angle: 0 });
   const [patterns, setPatterns] = useState<DesignInfo[] | null>(null);
   const [stroke, setStroke] = useState<[number, number][]>([]);
   const strokeTiles = useRef(new Set<string>());
+  const terrainTargets = useRef<[number, number][]>([]);
+  const terrainSeen = useRef(new Set<string>());
   const groundBefore = useRef<{ designs: number[]; terrain: Promise<Uint8Array> } | null>(null);
-  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true });
+  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true, contours: true });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
   const undo = useRef<Snapshot[]>([]);
   const redo = useRef<Snapshot[]>([]);
+  const warnedHigh = useRef(false);
   const clip = useRef<{ w: number; h: number; tiles: Item[] } | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -161,6 +201,11 @@ export default function MapEditor() {
         const [m, b] = await Promise.all([api.mapMeta(), api.buildings(), loadLayer(0), loadLayer(1), loadTerrain()]);
         setMeta(m); setBuildings(b); setVer((v) => v + 1); setLoaded(true);
         undo.current = []; redo.current = [];
+        if (m.max_elevation > 3 && !warnedHigh.current) {
+          warnedHigh.current = true;
+          toast("warn", "Terrain above the game limit",
+            `This save has tiles at elevation ${m.max_elevation}. The game supports 0–3; they are left unchanged and painting is limited to 0–3.`);
+        }
       } catch (e) { toast("error", "Could not load the map", String(e)); }
     })();
   }, [rev]);
@@ -232,7 +277,7 @@ export default function MapEditor() {
       try {
         await api.setTerrain(s.ground.terrain);
         await api.setDesignTiles(s.ground.designs);
-        setMeta((m) => (m ? { ...m, design_tiles: s.ground.designs } : m));
+        setMeta(await api.mapMeta());
         await loadTerrain();
         touch();
       } catch (e) { toast("error", "Could not undo the ground change", String(e)); }
@@ -270,6 +315,9 @@ export default function MapEditor() {
     const [tw, th] = meta.terrain_dims;
     return tx >= 0 && ty >= 0 && tx < tw && ty < th ? [tx, ty] : null;
   };
+  /** Top-left layer tile of a terrain tile (the inverse of `terrainTile`). */
+  const terrainLayer = ([tx, ty]: [number, number]): [number, number] =>
+    [(tx + 16) * 2 - L.offset_x, (ty + 16) * 2 - L.offset_y];
 
   // ------------------------------------------------------------- drawing
   useEffect(() => {
@@ -288,6 +336,30 @@ export default function MapEditor() {
       const { s, x: px, y: py } = view;
       const ox = px + L.offset_x * s, oy = py + L.offset_y * s;
       if (terrain) ctx.drawImage(terrain, 0, 0, terrain.width, terrain.height, px, py, MAP_W * s, MAP_H * s);
+      // Height contours: a line wherever two terrain tiles differ in elevation. Terrain data
+      // starts one acre (16 terrain tiles, 32 item tiles) into the map image.
+      if (show.contours && meta) {
+        const [tw, th] = meta.terrain_dims;
+        const d2 = 2 * s;
+        if (d2 >= 5) {
+          const bx = px + 16 * d2, by = py + 16 * d2;
+          ctx.strokeStyle = "rgba(20,38,20,0.6)";
+          ctx.lineWidth = Math.max(1, s * 0.35);
+          ctx.beginPath();
+          for (let tx = 0; tx < tw; tx++) for (let ty = 0; ty < th; ty++) {
+            const gx = bx + tx * d2, gy = by + ty * d2;
+            if (gx + d2 < 0 || gx > cw || gy + d2 < 0 || gy > ch) continue;
+            const e = meta.elevations[tx * th + ty];
+            if (tx + 1 < tw && meta.elevations[(tx + 1) * th + ty] !== e) {
+              ctx.moveTo(gx + d2 + 0.5, gy); ctx.lineTo(gx + d2 + 0.5, gy + d2);
+            }
+            if (ty + 1 < th && meta.elevations[tx * th + ty + 1] !== e) {
+              ctx.moveTo(gx, gy + d2 + 0.5); ctx.lineTo(gx + d2, gy + d2 + 0.5);
+            }
+          }
+          ctx.stroke();
+        }
+      }
       if (show.plaza && meta) {
         ctx.fillStyle = "rgba(150,155,165,0.35)";
         ctx.fillRect(px + meta.plaza.x * s, py + meta.plaza.z * s, PLAZA_W * s, PLAZA_H * s);
@@ -318,7 +390,13 @@ export default function MapEditor() {
       if (stroke.length) {
         const d2 = 2 * s;
         for (const [lx, ly] of stroke) {
-          if (ground?.kind === "design") {
+          if (tbrush) {
+            ctx.globalAlpha = 0.55;
+            ctx.fillStyle = tbrush.kind === "water" ? "#46bedc" : tbrush.kind === "water-erase" ? "#ff4d6d"
+              : tbrush.kind === "cliff" ? "#b48c5a" : "#ffd23f";
+            ctx.fillRect(ox + lx * s, oy + ly * s, d2, d2);
+            ctx.globalAlpha = 1;
+          } else if (ground?.kind === "design") {
             const dx = ox + (lx >> 1) * d2, dy = oy + (ly >> 1) * d2;
             const img = designImage(ground.index);
             if (img) { ctx.globalAlpha = 0.85; ctx.drawImage(img, dx, dy, d2, d2); ctx.globalAlpha = 1; }
@@ -469,7 +547,13 @@ export default function MapEditor() {
         let [fw, fh] = [1, 1];
         let [hx, hy] = hover;
         let ok = true;
-        if (tool === "place" && ground) {
+        if (tool === "place" && tbrush) {
+          const n = tbrush.kind === "shape" ? 1 : terrainSize;
+          const r = (n - 1) >> 1;
+          [fw, fh] = [2 * n, 2 * n];
+          hx = (hover[0] & ~1) - r * 2; hy = (hover[1] & ~1) - r * 2;
+          if (!terrainTile(hx, hy) || !terrainTile(hx + 2 * (n - 1), hy + 2 * (n - 1))) ok = false;
+        } else if (tool === "place" && ground) {
           // ground brushes work in one-terrain-tile (2×2 item tile) blocks
           [fw, fh] = [2, 2];
           hx = hover[0] & ~1; hy = hover[1] & ~1;
@@ -496,7 +580,7 @@ export default function MapEditor() {
   const buildingName = (k: number) => prettify((gd.enums.BuildingType ?? []).find(([, v]) => v === k)?.[0] ?? `Type ${k}`);
 
   // ------------------------------------------------------------- interaction
-  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect" | "ground"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
+  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect" | "ground" | "terrain"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
   const bdrag = useRef<{ index: number; startX: number; startY: number; mx: number; my: number; next: Building[] | null } | null>(null);
   const pasteMode = useRef(false);
   const space = useRef(false);
@@ -534,6 +618,25 @@ export default function MapEditor() {
     return true;
   };
 
+  const addTerrainTarget = (tx: number, ty: number) => {
+    if (!meta) return false;
+    const [tw, th] = meta.terrain_dims;
+    const r = (terrainSize - 1) >> 1;
+    let added = false;
+    for (let dx = 0; dx < terrainSize; dx++) for (let dy = 0; dy < terrainSize; dy++) {
+      const x = tx - r + dx, y = ty - r + dy;
+      if (x < 0 || y < 0 || x >= tw || y >= th) continue;
+      const key = `${x},${y}`;
+      if (terrainSeen.current.has(key)) continue;
+      terrainSeen.current.add(key);
+      terrainTargets.current.push([x, y]);
+      const [lx, ly] = terrainLayer([x, y]);
+      setStroke((s) => [...s, [lx, ly]]);
+      added = true;
+    }
+    return added;
+  };
+
   /** Commits a ground stroke: one command for paths, then the design grid. */
   const commitGround = async (tiles: [number, number][], brush: GroundBrush) => {
     const before = groundBefore.current;
@@ -559,6 +662,79 @@ export default function MapEditor() {
     } catch (e) { toast("error", "Could not paint the ground", String(e)); }
   };
 
+  /**
+   * Commits one terrain stroke. Water also clears ground designs on the painted tiles.
+   * The backend refuses a two-level step and warns about trees/buildings within one terrain tile.
+   */
+  const commitTerrain = async (targets: [number, number][], brush: TerrainBrush) => {
+    const before = groundBefore.current;
+    groundBefore.current = null;
+    if (!before || !targets.length || !meta) return;
+    const [dw, dh] = meta.design_dims;
+    const designs = brush.kind === "water" ? meta.design_tiles.slice() : null;
+    let designsDirty = false;
+    if (designs) {
+      for (const t of targets) {
+        const [lx, ly] = terrainLayer(t);
+        const dx = lx >> 1, dy = ly >> 1;
+        if (dx >= 0 && dy >= 0 && dx < dw && dy < dh && designs[dx * dh + dy] !== 0xf800) {
+          designs[dx * dh + dy] = 0xf800;
+          designsDirty = true;
+        }
+      }
+    }
+    try {
+      const prevTerrain = await before.terrain;
+      const res = brush.kind === "cliff"
+        ? await api.paintHeight(targets, brush.delta, sharp)
+        : await api.paintWater(targets, brush.kind === "water", sharp);
+      if (!res.changed && !designsDirty) { toast("info", "Nothing changed"); return; }
+      undo.current.push({ ground: { terrain: prevTerrain, designs: before.designs } });
+      if (undo.current.length > 100) undo.current.shift();
+      redo.current = [];
+      if (designsDirty && designs) {
+        await api.setDesignTiles(designs);
+      }
+      await loadTerrain();
+      // refresh elevations for the contours and hover height, plus the design grid
+      setMeta(await api.mapMeta());
+      touch();
+      const near = [
+        res.trees && `${res.trees} tree${res.trees === 1 ? "" : "s"}`,
+        res.buildings && `${res.buildings} building${res.buildings === 1 ? "" : "s"}`,
+      ].filter(Boolean).join(" and ");
+      const notes = [
+        near && `${near} within one terrain tile. The game normally keeps these away from cliffs and rivers.`,
+        res.warnings && `${res.warnings} water edge${res.warnings === 1 ? "" : "s"} need water one level below for a waterfall.`,
+      ].filter(Boolean).join(" ");
+      const title = res.changed
+        ? `${res.changed} terrain tile${res.changed === 1 ? "" : "s"} changed${res.falls ? `, ${res.falls} waterfall tile${res.falls === 1 ? "" : "s"}` : ""}`
+        : "The terrain did not change";
+      toast(notes ? "warn" : res.changed ? "ok" : "info", title, notes || undefined);
+    } catch (e) { toast("error", "Could not paint the terrain", String(e)); }
+  };
+
+  /** Manual one-tile model stamp for fixing an edge the autotiler cannot build. */
+  const commitShape = async (t: [number, number]) => {
+    if (!tbrush || tbrush.kind !== "shape" || !meta) return;
+    try {
+      const prev = await api.terrain();
+      const bytes = prev.slice();
+      const o = (t[0] * meta.terrain_dims[1] + t[1]) * 14;
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      dv.setUint16(o, tbrush.model, true);
+      dv.setUint16(o + 2, 0, true); // variation
+      dv.setUint16(o + 4, tbrush.angle, true);
+      await api.setTerrain(bytes);
+      await loadTerrain();
+      undo.current.push({ ground: { terrain: prev, designs: meta.design_tiles.slice() } });
+      if (undo.current.length > 100) undo.current.shift();
+      redo.current = [];
+      touch();
+      toast("ok", "Terrain shape changed");
+    } catch (e) { toast("error", "Could not change the terrain shape", String(e)); }
+  };
+
   const onDown = (e: React.PointerEvent) => {
     const r = canvas.current!.getBoundingClientRect();
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
@@ -570,6 +746,18 @@ export default function MapEditor() {
       const mx = tx + L.offset_x, my = ty + L.offset_y;
       if (pick.kind === "building" && buildings) { const next = buildings.slice(); next[pick.index] = { ...next[pick.index], x: Math.max(0, mx), y: Math.max(0, my) }; setBuildings(next); api.setBuildings(next).then(touch); }
       setPick(null);
+      return;
+    }
+    if (tool === "place" && tbrush) {
+      const t = terrainTile(tx, ty);
+      if (!t) { toast("info", "Terrain painting works inside the editable map", "The outer sea border is acre data, not terrain."); return; }
+      if (tbrush.kind === "shape") { commitShape(t); return; }
+      terrainSeen.current = new Set();
+      terrainTargets.current = [];
+      setStroke([]);
+      groundBefore.current = { designs: meta!.design_tiles.slice(), terrain: api.terrain() };
+      drag.current = { mode: "terrain", sx: cx, sy: cy, vx: 0, vy: 0, tx, ty, dirty: false, last: "" };
+      addTerrainTarget(t[0], t[1]);
       return;
     }
     if (tool === "place" && ground) {
@@ -643,6 +831,7 @@ export default function MapEditor() {
       return;
     }
     if (d.mode === "ground") { if (inLayer(tx, ty)) addGroundTile(tx, ty); return; }
+    if (d.mode === "terrain") { const t = terrainTile(tx, ty); if (t) addTerrainTarget(t[0], t[1]); return; }
     const key = `${tx},${ty}`;
     if (key === d.last) return;
     d.last = key;
@@ -665,6 +854,14 @@ export default function MapEditor() {
       strokeTiles.current = new Set();
       setStroke([]);
       if (ground) commitGround(tiles, ground);
+      return;
+    }
+    if (d.mode === "terrain") {
+      const targets = terrainTargets.current;
+      terrainTargets.current = [];
+      terrainSeen.current = new Set();
+      setStroke([]);
+      if (tbrush) commitTerrain(targets, tbrush);
       return;
     }
     if (d.mode === "paint" || d.mode === "erase") {
@@ -753,6 +950,7 @@ export default function MapEditor() {
   const hoverDesign = hover && inLayer(hover[0], hover[1]) && meta
     ? meta.design_tiles[(hover[0] >> 1) * meta.design_dims[1] + (hover[1] >> 1)]
     : 0xf800;
+  const hoverTerrain = hover ? terrainTile(hover[0], hover[1]) : null;
   const acreLabel = (x: number, y: number) => { const mx = x + L.offset_x, my = y + L.offset_y; return String.fromCharCode(65 + Math.floor(mx / 32)) + (Math.floor(my / 32) + 1); };
   const hoverDoor = tool === "inspect" && show.buildings && hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) >= 0 : false;
   const cursor = pick ? "crosshair" : bdrag.current ? "grabbing" : tool === "pan" ? "grab" : tool === "inspect" ? (hoverDoor ? "grab" : "default") : "crosshair";
@@ -779,7 +977,7 @@ export default function MapEditor() {
           {tool === "rect" && clip.current && <Button size="sm" icon={<ClipboardPaste />} onClick={() => { pasteMode.current = true; toast("info", "Click on the map to paste"); }}>Paste</Button>}
           <div style={{ flex: 1 }} />
           <MenuButton label="View" icon={<Eye />} size="sm" align="right" items={([
-            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"], ["designs", "Ground designs"],
+            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"], ["designs", "Ground designs"], ["contours", "Height contours"],
           ] as [keyof typeof show, string][]).map(([k, label]) => ({ label, icon: show[k] ? <CheckIcon /> : <span style={{ width: 14 }} />, onClick: () => setShow({ ...show, [k]: !show[k] }) }))} />
           <div className="row" style={{ gap: 4 }}>
             <Button size="sm" iconOnly icon={<ZoomOut />} onClick={() => zoomBy(0.8)} title="Zoom out (−)" />
@@ -792,7 +990,7 @@ export default function MapEditor() {
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
           {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the building · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · {hoverDesign < save!.pattern_count ? `Ground design #${hoverDesign}` : `Unknown ground value 0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · {hoverDesign < save!.pattern_count ? `Ground design #${hoverDesign}` : `Unknown ground value 0x${hoverDesign.toString(16).toUpperCase()}`}</span>}{hoverTerrain && <span className="faint"> · Height {meta.elevations[hoverTerrain[0] * meta.terrain_dims[1] + hoverTerrain[1]]}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>
@@ -817,14 +1015,23 @@ export default function MapEditor() {
   // ------------------------------------------------------------- panels (closures over editor state)
   function renderTile() {
     const selItem = selTile ? grid().get(selTile[0], selTile[1]) : null;
+    const terrainEnums = gd.enums.TerrainUnitModel ?? [];
+    const shapeOptions = TERRAIN_SHAPES
+      .map(([name, label]) => ({ value: terrainEnums.find(([n]) => n === name)?.[1] ?? -1, label }))
+      .filter((o) => o.value >= 0);
+    const selectedShape = shape.model || shapeOptions[0]?.value || 0;
+    const applyShape = (model: number, angle: number) => {
+      setShape({ model, angle });
+      if (tbrush?.kind === "shape") setTbrush({ kind: "shape", model, angle });
+    };
     return (
       <div className="col" style={{ gap: 16 }}>
         <div className="col" style={{ gap: 8 }}>
           <div className="row"><div className="label" style={{ flex: 1 }}>Brush</div><span className="tiny faint"><span className="kbd">B</span> place · <span className="kbd">R</span> rotate</span></div>
-          <ItemEditor item={brush} onChange={(it) => { setGround(null); setBrush(it); }} />
+          <ItemEditor item={brush} onChange={(it) => { setGround(null); setTbrush(null); setBrush(it); }} />
           <div className="row">
             <Button size="sm" icon={<RotateCw />} onClick={() => setBrush({ ...brush, system: (brush.system & ~3) | (((brush.system & 3) + 1) & 3) })}>Rotate</Button>
-            <Button size="sm" icon={<Brush />} variant={tool === "place" && !ground ? "primary" : "default"} onClick={() => { setGround(null); setTool("place"); }}>Paint with it</Button>
+            <Button size="sm" icon={<Brush />} variant={tool === "place" && !ground ? "primary" : "default"} onClick={() => { setGround(null); setTbrush(null); setTool("place"); }}>Paint with it</Button>
           </div>
         </div>
         <div className="divider" />
@@ -848,7 +1055,7 @@ export default function MapEditor() {
                   changed(layer); sync(layer);
                 }} />
                 <div className="row">
-                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
+                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setTbrush(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
                   <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => { snapshot(); grid().removeAt(gd, selTile[0], selTile[1]); changed(layer); sync(layer); setSelTile(null); }}>Remove</Button>
                 </div>
               </>
@@ -860,7 +1067,7 @@ export default function MapEditor() {
           <div className="row"><div className="label" style={{ flex: 1 }}>Ground</div><span className="tiny faint">paths and designs</span></div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
             {PATHS.map((p) => (
-              <button key={p.id} title={`Paint ${p.label}`} onClick={() => { setGround({ kind: "path", family: p.id }); setTool("place"); }}
+              <button key={p.id} title={`Paint ${p.label}`} onClick={() => { setTbrush(null); setGround({ kind: "path", family: p.id }); setTool("place"); }}
                 style={{ padding: "0 0 3px", borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
                   border: ground?.kind === "path" && ground.family === p.id ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
                 <span style={{ display: "block", height: 14, background: p.color }} />
@@ -869,7 +1076,7 @@ export default function MapEditor() {
             ))}
           </div>
           <div className="row">
-            <Button size="sm" variant={ground?.kind === "erase" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setGround({ kind: "erase" }); setTool("place"); }}>Erase ground</Button>
+            <Button size="sm" variant={ground?.kind === "erase" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setTbrush(null); setGround({ kind: "erase" }); setTool("place"); }}>Erase ground</Button>
             {ground && <Button size="sm" variant="ghost" onClick={() => setGround(null)}>Stop</Button>}
           </div>
           <div className="label" style={{ marginTop: 4 }}>My designs</div>
@@ -880,7 +1087,7 @@ export default function MapEditor() {
               {/* the panel is a flex column; without this wrapper the grid rows get squeezed instead of scrolling */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
                 {patterns.map((p) => (
-                  <button key={p.index} title={p.name || `Design ${p.index + 1}`} onClick={() => { setGround({ kind: "design", index: p.index }); setTool("place"); }}
+                  <button key={p.index} title={p.name || `Design ${p.index + 1}`} onClick={() => { setTbrush(null); setGround({ kind: "design", index: p.index }); setTool("place"); }}
                     style={{ padding: 0, borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
                       border: ground?.kind === "design" && ground.index === p.index ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
                     <img src={asset(`design/normal/${p.index}?r=${designEpoch}`)} alt="" style={{ display: "block", width: "100%", aspectRatio: "1", imageRendering: "pixelated" }} />
@@ -893,6 +1100,59 @@ export default function MapEditor() {
             {ground
               ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : "the ground away"}</b>. Drag on the map; pick an item above to place items again.</>
               : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other. PRO designs can't be placed on the ground in game, so they aren't offered.</>}
+          </div>
+        </div>
+        <div className="divider" />
+        <div className="col" style={{ gap: 8 }}>
+          <div className="row"><div className="label" style={{ flex: 1 }}>Terrain</div><span className="tiny faint">rivers, cliffs, falls</span></div>
+          {meta && meta.max_elevation > 3 && (
+            <Callout kind="warn" title="Terrain above the game limit">
+              This save has tiles at elevation {meta.max_elevation}. The game supports 0–3; existing tiles are
+              left unchanged, and painting is limited to 0–3.
+            </Callout>
+          )}
+          <Callout kind="warn" title="Experimental: check in game">
+            Only a single 1×1 cliff raise has been checked in game so far. Rivers, multi-tile cliffs,
+            higher plateaus, waterfall models and sharp corners are untested; check the island in game
+            after editing.
+          </Callout>
+          <div className="row wrap">
+            <Button size="sm" icon={<Droplets />} variant={tbrush?.kind === "water" ? "primary" : "default"}
+              onClick={() => { setGround(null); setTbrush({ kind: "water" }); setTool("place"); }}>Water</Button>
+            <Button size="sm" icon={<Eraser />} variant={tbrush?.kind === "water-erase" ? "primary" : "default"}
+              onClick={() => { setGround(null); setTbrush({ kind: "water-erase" }); setTool("place"); }}>Erase water</Button>
+            <Button size="sm" icon={<ArrowUp />} variant={tbrush?.kind === "cliff" && tbrush.delta > 0 ? "primary" : "default"}
+              onClick={() => { setGround(null); setTbrush({ kind: "cliff", delta: 1 }); setTool("place"); }}>Raise</Button>
+            <Button size="sm" icon={<ArrowDown />} variant={tbrush?.kind === "cliff" && tbrush.delta < 0 ? "primary" : "default"}
+              onClick={() => { setGround(null); setTbrush({ kind: "cliff", delta: -1 }); setTool("place"); }}>Lower</Button>
+            {tbrush && <Button size="sm" variant="ghost" onClick={() => setTbrush(null)}>Stop</Button>}
+          </div>
+          <div className="row">
+            <span className="tiny faint" style={{ minWidth: 40 }}>Brush</span>
+            <Select value={terrainSize} onChange={setTerrainSize}
+              options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: `${n} × ${n}` }))} style={{ width: 110 }} />
+          </div>
+          <div className="row">
+            <span className="tiny faint" style={{ minWidth: 40 }}>Corners</span>
+            <Select value={sharp ? 1 : 0} onChange={(v) => setSharp(v === 1)}
+              options={[{ value: 0, label: "Rounded" }, { value: 1, label: "Sharp" }]} style={{ width: 110 }} />
+          </div>
+          <div className="label" style={{ marginTop: 4 }}>Fix one tile / falls</div>
+          {shapeOptions.length ? (
+            <div className="row">
+              <Select value={selectedShape} onChange={(model) => applyShape(model, shape.angle)}
+                options={shapeOptions} style={{ flex: 1 }} />
+              <Button size="sm" icon={<RotateCw />} onClick={() => applyShape(selectedShape, (shape.angle + 1) & 3)}>{shape.angle * 90}°</Button>
+              <Button size="sm" variant={tbrush?.kind === "shape" ? "primary" : "default"}
+                onClick={() => { setGround(null); setTbrush({ kind: "shape", model: selectedShape, angle: shape.angle }); setTool("place"); }}>Pick</Button>
+            </div>
+          ) : <div className="tiny faint">The terrain model table is not available.</div>}
+          <div className="tiny faint">
+            {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall when it sits one level above water; paint the lower river first. Water clears ground designs.</>
+              : tbrush?.kind === "water-erase" ? <>Drag to erase rivers. The tile becomes grass at the same height; cliff faces next to it are restored.</>
+              : tbrush?.kind === "cliff" ? <>Drag to {tbrush.delta > 0 ? "raise" : "lower"} land. Faces are generated automatically for single tiles, strips, ridges and whole plateaus; increase the brush for larger areas. Water has to be erased first. New corners use the <b>{sharp ? "sharp" : "rounded"}</b> style; corners that already exist keep theirs.</>
+              : tbrush?.kind === "shape" ? <>Click one tile to set that exact model and rotation. Use it for edges the autotiler refuses and for waterfall models; hand-set falls are kept by later water strokes.</>
+              : <>Cliffs and rivers change the terrain model itself. Paths and designs are separate. Waterfalls are generated where a river drops one level onto water; the north-facing case is inferred.</>}
           </div>
         </div>
         <div className="divider" />
@@ -1082,6 +1342,10 @@ export default function MapEditor() {
     const reloadAll = async () => {
       const [m, b] = await Promise.all([api.mapMeta(), api.buildings(), loadLayer(0), loadLayer(1), loadTerrain()]);
       setMeta(m); setBuildings(b); changed(0); changed(1); undo.current = []; redo.current = [];
+      if (m.max_elevation > 3) {
+        toast("warn", "Terrain above the game limit",
+          `The imported terrain reaches elevation ${m.max_elevation}. The game supports 0–3; painting is limited to 0–3.`);
+      }
     };
     const rows: { kind: DumpKind; label: string; desc: string; filter: { name: string; extensions: string[] }; name: string; acre?: "field" | "terrain"; perLayer?: boolean }[] = [
       { kind: "field_layer", label: "Field items", desc: `Every item on layer ${layer + 1}`, filter: F.nhl, name: `layer${layer + 1}.nhl`, perLayer: true },
