@@ -1,6 +1,7 @@
 //! Island map: field item layers, terrain, acres, buildings and rendering.
 pub mod field;
 pub mod grid;
+pub mod paint;
 pub mod render;
 pub mod terrain;
 

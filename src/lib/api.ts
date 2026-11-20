@@ -29,7 +29,10 @@ export interface FlagInfo { index: number; name: string; label: string; default:
 export interface AchievementInfo { index: number; name: string; label: string; tiers: number; thresholds: number[]; }
 export interface GameData {
   lang: string; items: string[]; named: boolean[]; kinds: number[]; kind_names: string[]; colors: number[]; sizes: number[];
-  field_items: FieldItemInfo[]; villagers: VillagerInfo[]; enums: Record<string, [string, number][]>; recipes: [number, number][];
+  field_items: FieldItemInfo[]; building_sizes: Record<string, [number, number]>;
+  building_doors: Record<string, [number, number, number, number][]>;
+  building_bodies: Record<string, [number, number, number, number][]>; movable_buildings: number[];
+  villagers: VillagerInfo[]; enums: Record<string, [string, number][]>; recipes: [number, number][];
   achievements: AchievementInfo[]; flags_player: FlagInfo[]; flags_land: FlagInfo[]; flags_house: FlagInfo[];
   flags_villager: FlagInfo[]; flags_memory: FlagInfo[]; lists: Record<string, number[]>; mail: [string, string][];
   stationery: number[]; npc_senders: [number, string, string][]; box_skins: [number, string][]; mail_languages: string[];
@@ -211,6 +214,7 @@ export const api = {
   setFieldLayer: (layer: number, bytes: Uint8Array) => invoke<void>("set_field_layer", bytes, { headers: { "x-layer": String(layer) } }),
   terrain: async () => new Uint8Array(await call<ArrayBuffer>("terrain")),
   setTerrain: (bytes: Uint8Array) => invoke<void>("set_terrain", bytes),
+  paintRoad: (tiles: [number, number][], family: string | null) => call<number>("paint_road", { tiles, family }),
   terrainPng: async (px?: number) => new Uint8Array(await call<ArrayBuffer>("terrain_png", { px })),
   mapMeta: () => call<MapMeta>("map_meta"),
   setAcres: (acres: number[]) => call<void>("set_acres", { acres }),

@@ -2,12 +2,6 @@
 
 Handoff notes for AI sessions in this repo.
 
-## Working rules (from my global AGENTS.md)
-
-- I am a BSEE student and hobbyist developer. Explain an unfamiliar concept briefly the first time it matters.
-- When you are stuck, facing a design trade-off, or unsure after one failed attempt, stop and ask (`ask_advisor`) with a specific question instead of guessing.
-- Prefer the standard library and tools already installed in the project over new dependencies.
-
 ## What this project is
 
 NHSE is a save editor for **Animal Crossing: New Horizons**, rewritten in Rust with a native
@@ -21,7 +15,7 @@ It edits save data dumped from a console; it never dumps saves itself. Covers ga
 - `src-tauri` — desktop backend (Tauri commands, backups, image protocol). Entry: `src-tauri/src/lib.rs`.
 - `src` — React + TypeScript UI (`pages/`, `components/`, `lib/`).
 - `crates/nhse-switch` + `switch` — Switch 2 homebrew app (`nhse.nro`), see `switch/README.md`.
-- `docs` — longer reference notes; design pattern format: `docs/designs.md`.
+- `docs` — longer reference notes; design patterns: `docs/designs.md`; map editor: `docs/map-editor.md`.
 
 ## Commands
 
@@ -51,18 +45,15 @@ Windows 10/11).
 - The save format is byte-exact and cross-checked against the original C# NHSE. Do not change read/write layout without evidence; add a test in `nhse-core` when touching it.
 - GPL-3.0-or-later. This is a rewrite of Kaphotics' NHSE; upstream exchange file formats are intentionally compatible.
 - Never silently destroy user save data: the existing backup-on-open and single-commit-on-save behaviour is a hard requirement.
+- `save/` is a real v3.0.3 save (revision 34) excluded through `.git/info/exclude`, used for local probing; never commit it or other save data.
 
 ## Design editor
 
-- Design files are raw save slices: `.nhd` = `0x2A8`, `.nhpd` = `0x8A8` (`NORMAL_SIZE`/`PRO_SIZE` in
-  `crates/nhse-core/src/structs/design.rs`). acpatterns.com's `.acnh` is the same layout and is
-  accepted by the import dialog (`F.nhd` in `src/lib/dialog.ts`).
-- `import_design` rewrites the author to player 1, then `design::normalize_usage` fixes the
-  ownership/placement flag (`0x70`) to `0xEE00`/`0xEE02`. The island flag slot is skipped because the
-  game writes `0xEE04` there. Full byte layout: `docs/designs.md`.
-- The editor paints transparency as palette index 15; the checkerboard swatch beside the palette
-  selects it and Pick reads it from empty pixels. Pixel-only undo/redo is `Ctrl/Cmd+Z`,
-  `Ctrl/Cmd+Shift+Z`, `Ctrl+Y` (one step per stroke, 64 deep, reset on reload).
+Design file format, import rules and editor behaviour: see `docs/designs.md`.
+
+## Map editor
+
+Coordinates, footprints, doors, drag behaviour and warnings: see `docs/map-editor.md`.
 
 ## Platform status
 
@@ -75,7 +66,7 @@ What was done for Windows (2026-11-16):
 
 - `src-tauri/tauri.conf.json`: `bundle.targets` was macOS-only `["app", "dmg"]`; it is now `"all"`
   (dmg + app on macOS, NSIS + MSI on Windows).
-- Shortcut hints in the UI were hard-coded `⌘`. They now use `MOD` from `src/lib/util.ts`
+- Shortcut hints in the UI were hard-coded `⌘`. Hints now use `MOD` from `src/lib/util.ts`
   (`⌘` on macOS, `Ctrl` on Windows). Use `MOD` for any new hint.
 - `.github/workflows/build-macos.yml` (file kept, workflow renamed "Build desktop app") has a
   `windows` job that builds the NSIS installer and uploads it as an artifact.
@@ -97,7 +88,7 @@ Verified on Windows 11 (Rust 1.100, MSVC 14.51, Node 26, WebView2 157):
 - `npx tauri build --bundles nsis` — produces `target/release/bundle/nsis/NHSE_4.0.0_x64-setup.exe`.
 - `target\release\nhse.exe` starts and shows a responsive window, sprites load.
 - Opened, edited and saved a real **Switch 1** save with the app on Windows, and the changes loaded in
-  an emulator without a crash (user-tested, one dump).
+  an emulator without a crash (tested manually, one dump).
 
 Windows quirks worth knowing:
 
@@ -107,21 +98,43 @@ Windows quirks worth knowing:
 - `npm ci` may report esbuild's postinstall script as blocked; the build still works (the binary
   ships as a platform optional dependency).
 - Backups already avoid Windows-illegal characters in file names (`clean_file_name`).
+- The Backups page "Show folder" button uses `revealItemInDir(backups_dir + "/.")`. The trailing
+  `/.` is a macOS idiom, but on Windows the path goes through `GetFullPathNameW`, which collapses it,
+  so the button works: it opens the parent folder with the backups folder selected. It selects the
+  folder rather than opening its contents; switching to `openPath` would need `opener:allow-open-path`
+  in `src-tauri/capabilities/default.json`.
 
 Not done yet on Windows:
 
 - Nothing is published for Windows: `release.yml` still builds macOS + `nhse.nro` only. Adding a
   Windows job there needs care so two jobs don't race to create the same release.
-- `revealItemInDir(info.backups_dir + "/.")` in `src/pages/Backups.tsx` is a macOS idiom; check the
-  Backups page "Show folder" button on Windows.
 
-## My goals for this fork (NOT implemented yet — do not assume they are done)
+## Goals and status (do not assume the rest are done)
 
-- Save compatibility with **Switch 1** saves (`main.dat` from the original Switch, not just Switch 2 dumps). One real Switch 1 dump round-tripped on Windows (open → edit → save → emulator loads it), so this looks good; still verify other revisions before claiming support.
-- Possible feature expansion: **custom designs** and **map editing** (both already exist on desktop — extend rather than rebuild).
+- **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
+  draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
+  first part of a multi-part door gets the glyph. Villager houses draw their built body
+  (`building.rs::body`) so the open front row stays clear. Next: verify in-game, fill in the
+  remaining building sizes/doors, and test rotated buildings.
+- **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
+  their normal 32×32 thumbnails, with a hover index and a View toggle; PRO values still show as
+  markers because their value encoding is unmeasured. Notes in `docs/map-editor.md`.
+- **Map editor: path painting**: the Item panel's Ground section paints the eight default path
+  families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
+  save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
+  PRO designs are still skipped. Next: test painted paths and designs in-game. Notes in
+  `docs/map-editor.md`.
+- **Map editor: favourites** (not started): a quick-access palette of favourite patterns and paths.
+  Notes in `docs/map-editor.md`.
+- **Map editor: terrain/water/cliff painting** (not started): only the road layer and ground
+  designs are painted; `TerrainTile.model` (rivers, cliffs, elevation) is still import/export only.
+  Notes in `docs/map-editor.md`.
 
-Branches (2026-11-18): `windows-build` was merged upstream as `f85aee6` (PR #4); local `master` tracks
-`upstream/master`. `design-pattern-qol` (pushed to `origin`) carries the `.acnh` import and usage-flag
-fix plus the editor QoL work (transparent swatch, undo/redo); details in `docs/designs.md`.
+Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-pattern-qol` (PR #1:
+`.acnh` imports, usage-flag fix, design editor QoL). `windows-build` and `design-pattern-qol` were
+merged and deleted on `origin`; both still exist locally. Local `master` tracks `upstream/master` at
+`f85aee6` and trails `origin/master`. `map-editor-qol` carries the footprint, door, drag, warning,
+ground-design and path-painting work described in `docs/map-editor.md`.
 
-Remotes: `origin` is my fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.
+Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
+Do not push, open PRs or touch upstream unless explicitly asked.

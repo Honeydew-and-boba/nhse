@@ -5,20 +5,33 @@ import { ItemEditor } from "../components/ItemEditor";
 import { ItemPicker } from "../components/ItemPicker";
 import { Badge, Button, Callout, Check, Field, Loading, MenuButton, NumberInput, Segmented, Select, Tabs } from "../components/ui";
 import { enumOptions, prettify } from "../components/Widgets";
-import { api, type Arrangement, type Building, type ClearKind, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
+import { api, type Arrangement, type Building, type ClearKind, type DesignInfo, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
-import { EXT_ID, NONE_ID, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
+import { EXT_ID, NONE_ID, asset, buildingDoors, buildingFootprint, buildingMovable, buildingRects, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
 import { useGD, useStore } from "../lib/store";
 import { MOD } from "../lib/util";
 
 type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
-type Pick = { kind: "building"; index: number } | { kind: "plaza" } | null;
+type Pick = { kind: "building"; index: number } | null;
+type GroundBrush = { kind: "path"; family: string } | { kind: "design"; index: number } | { kind: "erase" };
+type Snapshot = { layer: number; tiles: Item[] } | { ground: { terrain: Uint8Array; designs: number[] } };
 interface View { s: number; x: number; y: number }
 
+/** Default path families, with the colours the terrain renderer uses. */
+const PATHS = [
+  { id: "soil", label: "Dirt", color: "#c49662" },
+  { id: "stone", label: "Stone", color: "#9e9ea0" },
+  { id: "brick", label: "Brick", color: "#b2463c" },
+  { id: "darksoil", label: "Dark dirt", color: "#785234" },
+  { id: "pattern", label: "Arched tile", color: "#ece6d2" },
+  { id: "sand", label: "Sand", color: "#e2c48c" },
+  { id: "tile", label: "Tile", color: "#5e84b2" },
+  { id: "wood", label: "Wood", color: "#aa784a" },
+];
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
-const PLAZA_W = 12, PLAZA_H = 10;
+const PLAZA_W = 24, PLAZA_H = 20; // 12×10 terrain tiles
 const MIN_S = 1, MAX_S = 40;
 const CLEAR_KINDS: [ClearKind, string][] = [
   ["weeds", "Weeds"], ["branches", "Tree branches"], ["stones", "Stones & rocks"], ["shells", "Shells"], ["flowers", "Flowers"], ["bushes", "Bushes"],
@@ -26,6 +39,65 @@ const CLEAR_KINDS: [ClearKind, string][] = [
 ];
 
 const rgbCache = new Map<number, [number, number, number]>();
+
+/** Four-way "drag me" badge: dark disc, white arrows. */
+const drawMoveBadge = (ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) => {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(27,27,27,0.92)"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.14); ctx.stroke();
+  const a = r * 0.6, h = Math.max(1.5, r * 0.3);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.2); ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(cx - a, cy); ctx.lineTo(cx + a, cy);
+  ctx.moveTo(cx, cy - a); ctx.lineTo(cx, cy + a);
+  ctx.stroke();
+  ctx.lineCap = "butt";
+  ctx.fillStyle = "#fff";
+  for (const [sx, sy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * a, cy + sy * a);
+    ctx.lineTo(cx + sx * a - sx * h - sy * h * 0.8, cy + sy * a - sy * h + sx * h * 0.8);
+    ctx.lineTo(cx + sx * a - sx * h + sy * h * 0.8, cy + sy * a - sy * h - sx * h * 0.8);
+    ctx.closePath(); ctx.fill();
+  }
+};
+
+/**
+ * A measured entrance: a translucent plate marks the door zone (and the drag hit area), and a
+ * one-terrain-tile door glyph with a drag badge sits in its middle.
+ */
+const drawDoorZone = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, s: number, hot: boolean, glyph = true) => {
+  ctx.fillStyle = hot ? "rgba(255,214,64,0.30)" : "rgba(255,214,64,0.16)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = hot ? "rgba(255,214,64,0.95)" : "rgba(255,214,64,0.55)";
+  ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.setLineDash([]);
+  if (!glyph) return;
+  const d = Math.min(2 * s, w * 0.92, h * 0.92); // one terrain tile is 2 item tiles
+  const cx = x + w / 2, cy = y + h / 2;
+  if (d >= 20) {
+    const gw = d * 0.6, gh = d * 0.86;
+    ctx.fillStyle = "rgba(255,246,214,0.95)";
+    ctx.fillRect(cx - gw / 2, cy - gh / 2, gw, gh);
+    ctx.strokeStyle = "rgba(20,20,20,0.8)"; ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - gw / 2 + 0.5, cy - gh / 2 + 0.5, gw - 1, gh - 1);
+    drawMoveBadge(ctx, cx, cy, Math.max(4, d * 0.17));
+  } else if (d >= 8) {
+    drawMoveBadge(ctx, cx, cy, Math.max(3, d * 0.28));
+  }
+};
+
+/** Fill colour per building category: houses, villagers, shops, civic, campsite, transport, special. */
+const buildingColor = (kind: number): [number, number, number] => {
+  if (kind <= 8) return [91, 140, 255];
+  if (kind <= 18) return [43, 182, 163];
+  if (kind === 19 || kind === 24) return [211, 61, 61];
+  if (kind === 20 || kind === 21) return [156, 107, 255];
+  if (kind === 25) return [255, 159, 67];
+  if (kind === 22 || kind === 23 || kind === 26 || kind === 27) return [136, 153, 170];
+  return [226, 112, 138];
+};
 
 export default function MapEditor() {
   const gd = useGD();
@@ -44,17 +116,26 @@ export default function MapEditor() {
   const [selTile, setSelTile] = useState<[number, number] | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [brush, setBrush] = useState<Item>({ ...NONE_ITEM });
-  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true });
+  const [ground, setGround] = useState<GroundBrush | null>(null);
+  const [patterns, setPatterns] = useState<DesignInfo[] | null>(null);
+  const [stroke, setStroke] = useState<[number, number][]>([]);
+  const strokeTiles = useRef(new Set<string>());
+  const groundBefore = useRef<{ designs: number[]; terrain: Promise<Uint8Array> } | null>(null);
+  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
-  const undo = useRef<{ layer: number; tiles: Item[] }[]>([]);
-  const redo = useRef<{ layer: number; tiles: Item[] }[]>([]);
+  const undo = useRef<Snapshot[]>([]);
+  const redo = useRef<Snapshot[]>([]);
   const clip = useRef<{ w: number; h: number; tiles: Item[] } | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const layerCanvas = useRef<(HTMLCanvasElement | null)[]>([null, null]);
   const sprites = useRef(new Map<string, HTMLImageElement | null>());
+  /** Thumbnails for placed ground designs, keyed by normal design index. */
+  const designs = useRef(new Map<number, HTMLImageElement | null>());
+  /** Cache-busts design URLs once per mount so an edited design is reloaded. */
+  const designEpoch = useRef(Date.now()).current;
   const syncChain = useRef<Promise<unknown>>(Promise.resolve());
   const [loaded, setLoaded] = useState(false);
   // side panel state lives here so it survives the frequent re-renders caused by the canvas
@@ -92,6 +173,12 @@ export default function MapEditor() {
     setView({ s, x: (r.width - MAP_W * s) / 2, y: (r.height - MAP_H * s) / 2 });
   }, [loaded]);
 
+  // non-empty normal designs for the ground palette; PRO designs are skipped for now
+  useEffect(() => {
+    if (!loaded) return;
+    api.designs("normal").then((d) => setPatterns(d.filter((p) => !p.empty))).catch(() => setPatterns([]));
+  }, [loaded, rev]);
+
   const grid = (l = layer) => new Grid(L.width, L.height, layers.current[l]);
   const rgb = (id: number): [number, number, number] => {
     let c = rgbCache.get(id);
@@ -118,15 +205,38 @@ export default function MapEditor() {
     return c;
   };
   const changed = (l: number) => { layerCanvas.current[l] = null; setVer((v) => v + 1); };
+  /** Loads a normal design thumbnail once; null while it loads (or if it fails). */
+  const designImage = (index: number) => {
+    let img = designs.current.get(index);
+    if (img === undefined) {
+      const im = new Image();
+      designs.current.set(index, null);
+      im.onload = () => { designs.current.set(index, im); setVer((v) => v + 1); };
+      im.src = asset(`design/normal/${index}?r=${designEpoch}`);
+      img = null;
+    }
+    return img;
+  };
   const sync = (l: number) => {
     const bytes = writeItems(layers.current[l]);
     syncChain.current = syncChain.current.then(() => api.setFieldLayer(l, bytes)).then(touch).catch((e) => toast("error", "Could not save map changes", String(e)));
     return syncChain.current;
   };
   const snapshot = (l = layer) => { undo.current.push({ layer: l, tiles: layers.current[l].slice() }); if (undo.current.length > 100) undo.current.shift(); redo.current = []; };
-  const doUndo = (from: typeof undo, to: typeof undo) => {
+  const doUndo = async (from: typeof undo, to: typeof redo) => {
     const s = from.current.pop();
     if (!s) return;
+    if ("ground" in s) {
+      to.current.push({ ground: { terrain: await api.terrain(), designs: meta?.design_tiles.slice() ?? [] } });
+      try {
+        await api.setTerrain(s.ground.terrain);
+        await api.setDesignTiles(s.ground.designs);
+        setMeta((m) => (m ? { ...m, design_tiles: s.ground.designs } : m));
+        await loadTerrain();
+        touch();
+      } catch (e) { toast("error", "Could not undo the ground change", String(e)); }
+      return;
+    }
     to.current.push({ layer: s.layer, tiles: layers.current[s.layer].slice() });
     layers.current[s.layer] = s.tiles;
     changed(s.layer); sync(s.layer);
@@ -148,6 +258,17 @@ export default function MapEditor() {
     return [mx - L.offset_x, my - L.offset_y];
   };
   const inLayer = (x: number, y: number) => x >= 0 && y >= 0 && x < L.width && y < L.height;
+  /**
+   * Terrain tile that contains a layer tile, or null outside the terrain layer. Terrain is
+   * rendered over the whole map but its data covers the middle 7×6 acres (16 tiles in).
+   */
+  const terrainTile = (x: number, y: number): [number, number] | null => {
+    if (!meta) return null;
+    const tx = Math.floor((x + L.offset_x) / 2) - 16;
+    const ty = Math.floor((y + L.offset_y) / 2) - 16;
+    const [tw, th] = meta.terrain_dims;
+    return tx >= 0 && ty >= 0 && tx < tw && ty < th ? [tx, ty] : null;
+  };
 
   // ------------------------------------------------------------- drawing
   useEffect(() => {
@@ -167,8 +288,50 @@ export default function MapEditor() {
       const ox = px + L.offset_x * s, oy = py + L.offset_y * s;
       if (terrain) ctx.drawImage(terrain, 0, 0, terrain.width, terrain.height, px, py, MAP_W * s, MAP_H * s);
       if (show.plaza && meta) {
-        ctx.fillStyle = "rgba(188,143,143,0.55)";
+        ctx.fillStyle = "rgba(150,155,165,0.35)";
         ctx.fillRect(px + meta.plaza.x * s, py + meta.plaza.z * s, PLAZA_W * s, PLAZA_H * s);
+      }
+      // placed custom designs sit on the ground under every item; each design tile is one
+      // terrain tile (2×2 items) and is aligned to the field layer, so layer tile / 2.
+      if (show.designs && meta) {
+        const [dw, dh] = meta.design_dims;
+        const d2 = 2 * s;
+        const gx0 = Math.max(0, Math.floor(-ox / d2)), gy0 = Math.max(0, Math.floor(-oy / d2));
+        const gx1 = Math.min(dw, Math.ceil((cw - ox) / d2)), gy1 = Math.min(dh, Math.ceil((ch - oy) / d2));
+        for (let x = gx0; x < gx1; x++) for (let y = gy0; y < gy1; y++) {
+          const v = meta.design_tiles[x * dh + y];
+          if (v === 0xf800) continue;
+          const dx = ox + x * d2, dy = oy + y * d2;
+          // Normal slots are proven (0..pattern_count-1); anything else keeps a plain marker
+          // until the PRO encoding is measured. See docs/map-editor.md.
+          const known = v < save!.pattern_count;
+          const img = known ? designImage(v) : null;
+          if (img) { ctx.drawImage(img, dx, dy, d2, d2); continue; }
+          ctx.fillStyle = known ? "rgba(255,61,161,0.12)" : "rgba(255,61,161,0.28)";
+          ctx.fillRect(dx, dy, d2, d2);
+          ctx.strokeStyle = "rgba(255,61,161,0.75)"; ctx.lineWidth = 1;
+          ctx.strokeRect(dx + 0.5, dy + 0.5, d2 - 1, d2 - 1);
+        }
+      }
+      // ground-painting preview: paths and designs sit under the item layers
+      if (stroke.length) {
+        const d2 = 2 * s;
+        for (const [lx, ly] of stroke) {
+          if (ground?.kind === "design") {
+            const dx = ox + (lx >> 1) * d2, dy = oy + (ly >> 1) * d2;
+            const img = designImage(ground.index);
+            if (img) { ctx.globalAlpha = 0.85; ctx.drawImage(img, dx, dy, d2, d2); ctx.globalAlpha = 1; }
+            else { ctx.fillStyle = "rgba(255,61,161,0.3)"; ctx.fillRect(dx, dy, d2, d2); }
+          } else {
+            const t = terrainTile(lx, ly);
+            if (!t) continue;
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = ground?.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.color ?? "#fff" : "rgba(255,77,109,0.55)";
+            // terrain data tile 0 is drawn at image tile 16 (one acre of sea border)
+            ctx.fillRect(px + (t[0] + 16) * d2, py + (t[1] + 16) * d2, d2, d2);
+            ctx.globalAlpha = 1;
+          }
+        }
       }
       if (show.other) { ctx.globalAlpha = 0.3; ctx.drawImage(layerImage(1 - layer), ox, oy, L.width * s, L.height * s); }
       ctx.globalAlpha = 0.92;
@@ -233,23 +396,55 @@ export default function MapEditor() {
         ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 2;
         for (const [x, y] of floating) ctx.strokeRect(ox + x * s, oy + y * s, s, s);
       }
-      // buildings
+      // buildings: x/y is the centre of a plot measured in terrain tiles (16 per acre),
+      // so the footprint spans x ± width and y ± height in item tiles (32 per acre).
       if (show.buildings && buildings) {
         ctx.font = `600 ${Math.max(10, Math.min(13, s * 2))}px Inter, system-ui`;
         ctx.textAlign = "center";
+        const hoverIdx = hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) : -1;
         buildings.forEach((b, i) => {
           if (!b.kind) return;
-          const cx = px + b.x * s, cy = py + b.y * s, r = Math.max(5, 3 * s);
-          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fillStyle = i === selBuilding ? "rgba(255,170,0,0.85)" : "rgba(30,30,40,0.55)";
-          ctx.fill();
-          ctx.strokeStyle = i === selBuilding ? "#fff" : "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.5; ctx.stroke();
+          const sel = i === selBuilding;
+          const [r, g, bl] = buildingColor(b.kind);
+          const edge = sel ? "#fff" : `rgba(${r},${g},${bl},0.9)`;
+          const rects = buildingRects(gd, b.kind);
+          for (const [dx, dy, dw, dh] of rects) {
+            const x = px + (b.x + dx) * s, y = py + (b.y + dy) * s;
+            const w = dw * s, h = dh * s;
+            ctx.fillStyle = `rgba(${r},${g},${bl},${sel ? 0.5 : 0.26})`;
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = edge; ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+            // corner ticks make the edges readable at a glance
+            if (Math.min(w, h) >= 16) {
+              const c = Math.min(10, w / 4, h / 4);
+              ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.9)"; ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+              ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+              ctx.moveTo(x + w, y + h - c); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - c, y + h);
+              ctx.moveTo(x + c, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - c);
+              ctx.stroke();
+            }
+          }
+          // entrances: a translucent plate marks the door zone, the glyph is the drag handle
+          const doors = buildingDoors(gd, b.kind);
+          doors.forEach(([dx, dy, dw, dh], di) => {
+            drawDoorZone(ctx, px + (b.x + dx) * s, py + (b.y + dy) * s, dw * s, dh * s, s, sel || hoverIdx === i, di === 0);
+          });
+          if (!doors.length) {
+            // no measured door: a neutral centre handle still allows dragging
+            drawMoveBadge(ctx, px + b.x * s, py + b.y * s, Math.max(3, Math.min(6, s * 0.7)));
+          }
           if (s >= 2) {
+            const [bdx, , bdw] = rects[0];
+            const bottom = Math.max(...rects.map((d) => d[1] + d[3]), ...doors.map((d) => d[1] + d[3]));
             const label = buildingName(b.kind);
             ctx.fillStyle = "rgba(0,0,0,0.55)";
             const tw = ctx.measureText(label).width + 8;
-            ctx.fillRect(cx - tw / 2, cy + r + 2, tw, 16);
-            ctx.fillStyle = "#fff"; ctx.fillText(label, cx, cy + r + 14);
+            const lx = px + (b.x + bdx + bdw / 2) * s, ly = py + (b.y + bottom) * s;
+            ctx.fillRect(lx - tw / 2, ly + 2, tw, 16);
+            ctx.fillStyle = "#fff"; ctx.fillText(label, lx, ly + 14);
           }
         });
         ctx.textAlign = "start";
@@ -271,8 +466,14 @@ export default function MapEditor() {
       // hover
       if (hover && inLayer(hover[0], hover[1])) {
         let [fw, fh] = [1, 1];
+        let [hx, hy] = hover;
         let ok = true;
-        if (tool === "place" && brush.id !== NONE_ID) {
+        if (tool === "place" && ground) {
+          // ground brushes work in one-terrain-tile (2×2 item tile) blocks
+          [fw, fh] = [2, 2];
+          hx = hover[0] & ~1; hy = hover[1] & ~1;
+          if (ground.kind !== "design" && !terrainTile(hx, hy)) ok = false;
+        } else if (tool === "place" && brush.id !== NONE_ID) {
           [fw, fh] = footprint(gd, brush);
           ok = !settings?.map_prevent_overlap || grid().check(gd, brush, hover[0], hover[1]) === "ok";
           if (hover[0] + fw > L.width || hover[1] + fh > L.height) ok = false;
@@ -281,8 +482,8 @@ export default function MapEditor() {
         }
         ctx.strokeStyle = ok ? "rgba(255,255,255,0.95)" : "#ff4d6d"; ctx.lineWidth = 1.5;
         ctx.fillStyle = ok ? "rgba(255,255,255,0.18)" : "rgba(255,77,109,0.25)";
-        ctx.fillRect(ox + hover[0] * s, oy + hover[1] * s, fw * s, fh * s);
-        ctx.strokeRect(ox + hover[0] * s + 0.5, oy + hover[1] * s + 0.5, fw * s - 1, fh * s - 1);
+        ctx.fillRect(ox + hx * s, oy + hy * s, fw * s, fh * s);
+        ctx.strokeRect(ox + hx * s + 0.5, oy + hy * s + 0.5, fw * s - 1, fh * s - 1);
       }
     };
     frame = requestAnimationFrame(draw);
@@ -294,9 +495,20 @@ export default function MapEditor() {
   const buildingName = (k: number) => prettify((gd.enums.BuildingType ?? []).find(([, v]) => v === k)?.[0] ?? `Type ${k}`);
 
   // ------------------------------------------------------------- interaction
-  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
+  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect" | "ground"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
+  const bdrag = useRef<{ index: number; startX: number; startY: number; mx: number; my: number; next: Building[] | null } | null>(null);
   const pasteMode = useRef(false);
   const space = useRef(false);
+
+  /** Index of the building whose door or move handle is at this absolute item position, or -1. */
+  const doorAt = (mx: number, my: number) =>
+    buildings?.findIndex((b) => {
+      if (!b.kind) return false;
+      const rects = buildingDoors(gd, b.kind);
+      if (!rects.length) return mx >= b.x - 1 && mx <= b.x && my >= b.y - 1 && my <= b.y;
+      return rects.some(([dx, dy, dw, dh]) =>
+        mx >= b.x + dx && mx < b.x + dx + dw && my >= b.y + dy && my < b.y + dy + dh);
+    }) ?? -1;
 
   const paintAt = (x: number, y: number, single: boolean) => {
     const g = grid();
@@ -313,6 +525,39 @@ export default function MapEditor() {
   };
   const eraseAt = (x: number, y: number) => inLayer(x, y) && !!grid().removeAt(gd, x, y);
 
+  const addGroundTile = (x: number, y: number) => {
+    const key = `${x},${y}`;
+    if (strokeTiles.current.has(key)) return false;
+    strokeTiles.current.add(key);
+    setStroke((s) => [...s, [x, y]]);
+    return true;
+  };
+
+  /** Commits a ground stroke: one command for paths, then the design grid. */
+  const commitGround = async (tiles: [number, number][], brush: GroundBrush) => {
+    const before = groundBefore.current;
+    groundBefore.current = null;
+    if (!before || !tiles.length || !meta) return;
+    const uniq = (a: [number, number][]) => [...new Map(a.map((p) => [p.join(","), p] as [string, [number, number]])).values()];
+    const designs = uniq(tiles.map(([x, y]) => [x >> 1, y >> 1] as [number, number]));
+    const terrain = uniq(tiles.map(([x, y]) => terrainTile(x, y)).filter((p): p is [number, number] => !!p));
+    const dh = meta.design_dims[1];
+    const next = meta.design_tiles.slice();
+    for (const [x, y] of designs) next[x * dh + y] = brush.kind === "design" ? brush.index : 0xf800;
+    const designsChanged = designs.some(([x, y]) => next[x * dh + y] !== meta.design_tiles[x * dh + y]);
+    if (!terrain.length && !designsChanged) return;
+    try {
+      const prevTerrain = await before.terrain;
+      await api.paintRoad(terrain, brush.kind === "path" ? brush.family : null);
+      if (designsChanged) { await api.setDesignTiles(next); setMeta({ ...meta, design_tiles: next }); }
+      await loadTerrain();
+      undo.current.push({ ground: { terrain: prevTerrain, designs: before.designs } });
+      if (undo.current.length > 100) undo.current.shift();
+      redo.current = [];
+      touch();
+    } catch (e) { toast("error", "Could not paint the ground", String(e)); }
+  };
+
   const onDown = (e: React.PointerEvent) => {
     const r = canvas.current!.getBoundingClientRect();
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
@@ -322,14 +567,35 @@ export default function MapEditor() {
     if (e.button !== 0) return;
     if (pick) {
       const mx = tx + L.offset_x, my = ty + L.offset_y;
-      if (pick.kind === "plaza" && meta) { const plaza = { x: Math.max(0, mx), z: Math.max(0, my) }; setMeta({ ...meta, plaza }); api.setPlaza(plaza).then(touch); }
       if (pick.kind === "building" && buildings) { const next = buildings.slice(); next[pick.index] = { ...next[pick.index], x: Math.max(0, mx), y: Math.max(0, my) }; setBuildings(next); api.setBuildings(next).then(touch); }
       setPick(null);
       return;
     }
+    if (tool === "place" && ground) {
+      strokeTiles.current = new Set();
+      setStroke([]);
+      groundBefore.current = { designs: meta!.design_tiles.slice(), terrain: api.terrain() };
+      drag.current = { mode: "ground", sx: cx, sy: cy, vx: 0, vy: 0, tx, ty, dirty: false, last: "" };
+      if (inLayer(tx, ty)) addGroundTile(tx, ty);
+      return;
+    }
+    if (tool === "inspect" && show.buildings && buildings) {
+      const mx = tx + L.offset_x, my = ty + L.offset_y;
+      const hit = doorAt(mx, my);
+      if (hit >= 0) {
+        setSelBuilding(hit); setPanel("buildings");
+        bdrag.current = { index: hit, startX: buildings[hit].x, startY: buildings[hit].y, mx, my, next: null };
+        return;
+      }
+    }
     if (tool === "inspect") {
       if (show.buildings && buildings) {
-        const hit = buildings.findIndex((b) => b.kind && Math.hypot(view.x + b.x * view.s - cx, view.y + b.y * view.s - cy) <= Math.max(5, 3 * view.s));
+        const mx = tx + L.offset_x, my = ty + L.offset_y;
+        const hit = buildings.findIndex((b) => {
+          if (!b.kind) return false;
+          return buildingRects(gd, b.kind).some(([dx, dy, dw, dh]) =>
+            mx >= b.x + dx && mx < b.x + dx + dw && my >= b.y + dy && my < b.y + dy + dh);
+        });
         if (hit >= 0) { setSelBuilding(hit); setPanel("buildings"); return; }
       }
       if (inLayer(tx, ty)) { setSelTile(grid().rootOf(tx, ty) ?? [tx, ty]); setPanel("tile"); }
@@ -353,6 +619,19 @@ export default function MapEditor() {
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
     const [tx, ty] = toTile(cx, cy);
     if (!hover || hover[0] !== tx || hover[1] !== ty) setHover([tx, ty]);
+    const bd = bdrag.current;
+    if (bd && buildings) {
+      // one terrain tile per step keeps every plot aligned to the terrain grid
+      const [fw, fh] = buildingFootprint(gd, buildings[bd.index].kind);
+      const nx = Math.max(L.offset_x + fw, Math.min(L.offset_x + L.width - fw, bd.startX + Math.round((tx + L.offset_x - bd.mx) / 2) * 2));
+      const ny = Math.max(L.offset_y + fh, Math.min(L.offset_y + L.height - fh, bd.startY + Math.round((ty + L.offset_y - bd.my) / 2) * 2));
+      if (buildings[bd.index].x !== nx || buildings[bd.index].y !== ny) {
+        const next = buildings.slice();
+        next[bd.index] = { ...next[bd.index], x: nx, y: ny };
+        setBuildings(next); bd.next = next;
+      }
+      return;
+    }
     const d = drag.current;
     if (!d) return;
     if (d.mode === "pan") { setView({ ...view, x: d.vx + cx - d.sx, y: d.vy + cy - d.sy }); return; }
@@ -362,6 +641,7 @@ export default function MapEditor() {
       if (x1 >= x0 && y1 >= y0) setRect({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
       return;
     }
+    if (d.mode === "ground") { if (inLayer(tx, ty)) addGroundTile(tx, ty); return; }
     const key = `${tx},${ty}`;
     if (key === d.last) return;
     d.last = key;
@@ -373,9 +653,19 @@ export default function MapEditor() {
   };
 
   const onUp = () => {
+    const bd = bdrag.current;
+    bdrag.current = null;
+    if (bd?.next) api.setBuildings(bd.next).then(touch).catch((e) => toast("error", "Could not save buildings", String(e)));
     const d = drag.current;
     drag.current = null;
     if (!d) return;
+    if (d.mode === "ground") {
+      const tiles = [...strokeTiles.current].map((k) => k.split(",").map(Number) as [number, number]);
+      strokeTiles.current = new Set();
+      setStroke([]);
+      if (ground) commitGround(tiles, ground);
+      return;
+    }
     if (d.mode === "paint" || d.mode === "erase") {
       if (d.dirty) sync(layer); else undo.current.pop();
     }
@@ -459,8 +749,12 @@ export default function MapEditor() {
 
   if (!loaded || !meta || !buildings) return <Loading />;
   const hovered = hover && inLayer(hover[0], hover[1]) ? grid().get(hover[0], hover[1]) : null;
+  const hoverDesign = hover && inLayer(hover[0], hover[1]) && meta
+    ? meta.design_tiles[(hover[0] >> 1) * meta.design_dims[1] + (hover[1] >> 1)]
+    : 0xf800;
   const acreLabel = (x: number, y: number) => { const mx = x + L.offset_x, my = y + L.offset_y; return String.fromCharCode(65 + Math.floor(mx / 32)) + (Math.floor(my / 32) + 1); };
-  const cursor = pick ? "crosshair" : tool === "pan" ? "grab" : tool === "inspect" ? "default" : "crosshair";
+  const hoverDoor = tool === "inspect" && show.buildings && hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) >= 0 : false;
+  const cursor = pick ? "crosshair" : bdrag.current ? "grabbing" : tool === "pan" ? "grab" : tool === "inspect" ? (hoverDoor ? "grab" : "default") : "crosshair";
 
   return (
     <div className="content flush" style={{ flexDirection: "row" }}>
@@ -484,7 +778,7 @@ export default function MapEditor() {
           {tool === "rect" && clip.current && <Button size="sm" icon={<ClipboardPaste />} onClick={() => { pasteMode.current = true; toast("info", "Click on the map to paste"); }}>Paste</Button>}
           <div style={{ flex: 1 }} />
           <MenuButton label="View" icon={<Eye />} size="sm" align="right" items={([
-            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"],
+            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"], ["designs", "Ground designs"],
           ] as [keyof typeof show, string][]).map(([k, label]) => ({ label, icon: show[k] ? <CheckIcon /> : <span style={{ width: 14 }} />, onClick: () => setShow({ ...show, [k]: !show[k] }) }))} />
           <div className="row" style={{ gap: 4 }}>
             <Button size="sm" iconOnly icon={<ZoomOut />} onClick={() => zoomBy(0.8)} title="Zoom out (−)" />
@@ -495,9 +789,9 @@ export default function MapEditor() {
         <div ref={wrap} style={{ flex: 1, position: "relative", overflow: "hidden" }}>
           <canvas ref={canvas} style={{ position: "absolute", inset: 0, cursor, touchAction: "none" }}
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
-          {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the {pick.kind === "plaza" ? "plaza" : "building"} · Esc to cancel</Badge></div>}
+          {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the building · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · Ground design {hoverDesign < save!.pattern_count ? `#${hoverDesign}` : `0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>
@@ -526,10 +820,50 @@ export default function MapEditor() {
       <div className="col" style={{ gap: 16 }}>
         <div className="col" style={{ gap: 8 }}>
           <div className="row"><div className="label" style={{ flex: 1 }}>Brush</div><span className="tiny faint"><span className="kbd">B</span> place · <span className="kbd">R</span> rotate</span></div>
-          <ItemEditor item={brush} onChange={setBrush} />
+          <ItemEditor item={brush} onChange={(it) => { setGround(null); setBrush(it); }} />
           <div className="row">
             <Button size="sm" icon={<RotateCw />} onClick={() => setBrush({ ...brush, system: (brush.system & ~3) | (((brush.system & 3) + 1) & 3) })}>Rotate</Button>
-            <Button size="sm" icon={<Brush />} variant={tool === "place" ? "primary" : "default"} onClick={() => setTool("place")}>Paint with it</Button>
+            <Button size="sm" icon={<Brush />} variant={tool === "place" && !ground ? "primary" : "default"} onClick={() => { setGround(null); setTool("place"); }}>Paint with it</Button>
+          </div>
+        </div>
+        <div className="divider" />
+        <div className="col" style={{ gap: 8 }}>
+          <div className="row"><div className="label" style={{ flex: 1 }}>Ground</div><span className="tiny faint">paths and designs</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+            {PATHS.map((p) => (
+              <button key={p.id} title={`Paint ${p.label}`} onClick={() => { setGround({ kind: "path", family: p.id }); setTool("place"); }}
+                style={{ padding: "0 0 3px", borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
+                  border: ground?.kind === "path" && ground.family === p.id ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
+                <span style={{ display: "block", height: 14, background: p.color }} />
+                <span className="tiny" style={{ display: "block", paddingTop: 2 }}>{p.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="row">
+            <Button size="sm" variant={ground?.kind === "erase" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setGround({ kind: "erase" }); setTool("place"); }}>Erase ground</Button>
+            {ground && <Button size="sm" variant="ghost" onClick={() => setGround(null)}>Stop</Button>}
+          </div>
+          <div className="label" style={{ marginTop: 4 }}>My designs</div>
+          {patterns === null ? <div className="tiny faint">Loading…</div> : patterns.length === 0 ? (
+            <div className="tiny faint">No saved designs. Draw one on the Designs page first.</div>
+          ) : (
+            <div style={{ flex: "none", maxHeight: 170, overflowY: "auto" }}>
+              {/* the panel is a flex column; without this wrapper the grid rows get squeezed instead of scrolling */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                {patterns.map((p) => (
+                  <button key={p.index} title={p.name || `Design ${p.index + 1}`} onClick={() => { setGround({ kind: "design", index: p.index }); setTool("place"); }}
+                    style={{ padding: 0, borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
+                      border: ground?.kind === "design" && ground.index === p.index ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
+                    <img src={asset(`design/normal/${p.index}?r=${designEpoch}`)} alt="" style={{ display: "block", width: "100%", aspectRatio: "1", imageRendering: "pixelated" }} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="tiny faint">
+            {ground
+              ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : "the ground away"}</b>. Drag on the map; pick an item above to place items again.</>
+              : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other, and PRO designs are not handled yet.</>}
           </div>
         </div>
         <div className="divider" />
@@ -553,7 +887,7 @@ export default function MapEditor() {
                   changed(layer); sync(layer);
                 }} />
                 <div className="row">
-                  <Button size="sm" icon={<Brush />} onClick={() => { setBrush(selItem); setTool("place"); }}>Use as brush</Button>
+                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
                   <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => { snapshot(); grid().removeAt(gd, selTile[0], selTile[1]); changed(layer); sync(layer); setSelTile(null); }}>Remove</Button>
                 </div>
               </>
@@ -678,7 +1012,11 @@ export default function MapEditor() {
                 <Field label="Unique id"><NumberInput value={b.unique_id} max={0xffff} onChange={(unique_id) => upd({ unique_id })} /></Field>
               </div>
             )}
-            <Callout kind="warn">Moving buildings does not move their footprint in the terrain. Keep the area flat and clear, or the game may misbehave.</Callout>
+            {buildingMovable(gd, b.kind) ? (
+              <Callout kind="warn">NHSE only changes the coordinates. Terrain, rivers, cliffs, trees, furniture and other buildings stay where they are, so check the new plot and its surroundings before saving.</Callout>
+            ) : (
+              <Callout kind="danger">The game doesn't let you move this structure. Bridges, inclines, the airport, tent, Resident Services, Redd's trawler, the studio and the hotel should stay fixed; moving them can break paths, layouts or the island.</Callout>
+            )}
           </div>
         )}
         <div className="row"><div className="label" style={{ flex: 1 }}>All buildings</div><Check label="Show empty slots" checked={showEmpty} onChange={setShowEmpty} /></div>
@@ -705,11 +1043,9 @@ export default function MapEditor() {
       <div className="col" style={{ gap: 16 }}>
         <section className="col">
           <div className="label">Resident Services plaza</div>
-          <div className="grid cols-2" style={{ gap: 10 }}>
-            <Field label="X"><NumberInput value={m.plaza.x} onChange={(x) => { const plaza = { ...m.plaza, x }; setMeta({ ...m, plaza }); api.setPlaza(plaza).then(touch); }} /></Field>
-            <Field label="Z"><NumberInput value={m.plaza.z} onChange={(z) => { const plaza = { ...m.plaza, z }; setMeta({ ...m, plaza }); api.setPlaza(plaza).then(touch); }} /></Field>
+          <div className="small faint">
+            X {m.plaza.x}, Y {m.plaza.z - L.offset_y} · 12×10 terrain tiles. The game doesn't let you move the plaza; it is shown for reference only.
           </div>
-          <Button size="sm" icon={<Crosshair />} onClick={() => setPick({ kind: "plaza" })}>Pick position on the map</Button>
         </section>
         <section className="col">
           <div className="label">Acre templates</div>
