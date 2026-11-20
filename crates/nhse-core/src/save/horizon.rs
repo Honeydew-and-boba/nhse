@@ -77,7 +77,7 @@ pub struct HorizonSave {
 impl HorizonSave {
     /// Opens a save from a folder, a `main.dat` path, or a `.zip`.
     pub fn open(path: &Path) -> Result<Self> {
-        let src = if path.is_dir() {
+        let src = if super::provider::path_is_dir(path) {
             SaveSource::folder(path)?
         } else if path
             .extension()
@@ -251,7 +251,7 @@ impl HorizonSave {
         let mut write = |f: &SaveFile| -> Result<()> {
             let p = dir.join(f.data_path());
             if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent)?;
+                super::provider::create_dir_all(parent)?;
             }
             std::fs::write(p, &f.data)?;
             n += 1;
@@ -271,8 +271,8 @@ impl HorizonSave {
         let mut n = 0;
         let mut load = |f: &mut SaveFile| -> Result<()> {
             let p = dir.join(f.data_path());
-            if p.is_file() {
-                f.replace_decrypted(std::fs::read(&p)?)?;
+            if super::provider::path_is_file(&p) {
+                f.replace_decrypted(super::provider::read_file(&p)?)?;
                 n += 1;
             }
             Ok(())

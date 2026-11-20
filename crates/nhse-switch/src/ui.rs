@@ -170,6 +170,8 @@ pub struct Info {
 
 /// A screen: a list of rows.
 pub trait View {
+    /// Optional visual preview in the side panel.
+    fn preview(&self, _cx: &Cx, _g: &mut Gfx) {}
     fn title(&self, cx: &Cx) -> String;
     fn rows(&self, cx: &Cx) -> Vec<Row>;
     /// A on a row.
@@ -235,7 +237,7 @@ impl Cx {
             self.system_dark = self.platform.system_dark();
         }
         let dir = self.platform.data_dir();
-        let saved = std::fs::create_dir_all(&dir).and_then(|_| {
+        let saved = nhse_core::save::provider::create_dir_all(&dir).and_then(|_| {
             std::fs::write(
                 dir.join(SETTINGS_FILE),
                 format!("theme={}\n", choice.name()),
@@ -248,7 +250,7 @@ impl Cx {
 
     fn load_settings(&mut self) {
         let path = self.platform.data_dir().join(SETTINGS_FILE);
-        if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(text) = nhse_core::save::provider::read_text(&path) {
             for line in text.lines() {
                 if let Some(t) = line.strip_prefix("theme=").and_then(ThemeChoice::parse) {
                     self.theme_choice = t;
@@ -662,6 +664,7 @@ impl App {
         draw_list(g, e, e.view.empty_text());
         let info = e.view.info(cx, &e.rows, e.sel);
         draw_info(g, &info);
+        e.view.preview(cx, g);
         let mut hints: Vec<(&str, &str)> = Vec::new();
         if e.rows
             .get(e.sel)

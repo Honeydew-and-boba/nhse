@@ -5,6 +5,101 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "horizon")]
+fn path_kind(path: &Path) -> i32 {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    extern "C" {
+        fn nhse_path_kind(path: *const std::ffi::c_char) -> i32;
+    }
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    unsafe { nhse_path_kind(path.as_ptr()) }
+}
+
+#[cfg(not(target_os = "horizon"))]
+fn path_kind(path: &Path) -> i32 {
+    if path.is_file() {
+        1
+    } else if path.is_dir() {
+        2
+    } else {
+        0
+    }
+}
+
+pub fn path_is_file(path: &Path) -> bool {
+    path_kind(path) == 1
+}
+pub fn path_is_dir(path: &Path) -> bool {
+    path_kind(path) == 2
+}
+pub fn path_exists(path: &Path) -> bool {
+    path_kind(path) != 0
+}
+
+/// Rust's recursive mkdir checks `Path::is_dir`, which uses the wrong Horizon stat layout.
+pub fn create_dir_all(path: &Path) -> std::io::Result<()> {
+    if path.as_os_str().is_empty() || path.parent().is_none() {
+        return Ok(());
+    }
+    match fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path_is_dir(path) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            create_dir_all(path.parent().unwrap())?;
+            match fs::create_dir(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && path_is_dir(path) => {
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Read without Rust's file-size hint, whose stat layout is wrong on Horizon.
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => return Ok(out),
+            Ok(n) => {
+                out.try_reserve(n).map_err(std::io::Error::other)?;
+                out.extend_from_slice(&chunk[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    String::from_utf8(read_file(path)?).map_err(std::io::Error::other)
+}
+
+#[cfg(target_os = "horizon")]
+pub fn path_len(path: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    extern "C" {
+        fn nhse_path_size(path: *const std::ffi::c_char, size: *mut u64) -> i32;
+    }
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut size = 0;
+    (unsafe { nhse_path_size(path.as_ptr(), &mut size) } == 0).then_some(size)
+}
+
+#[cfg(not(target_os = "horizon"))]
+pub fn path_len(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|m| m.len())
+}
+
 /// Where a save was loaded from, and where it is written back to.
 #[derive(Debug)]
 pub enum SaveSource {
@@ -27,7 +122,7 @@ fn normalize(p: &str) -> String {
 impl SaveSource {
     pub fn folder(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        if !path.join("main.dat").is_file() {
+        if !path_is_file(&path.join("main.dat")) {
             return Err(Error::MissingFile(format!(
                 "main.dat not found in {}",
                 path.display()
@@ -86,7 +181,7 @@ impl SaveSource {
         match self {
             SaveSource::Folder(root) => {
                 let p = root.join(rel);
-                fs::read(&p).map_err(|e| {
+                read_file(&p).map_err(|e| {
                     if e.kind() == std::io::ErrorKind::NotFound {
                         Error::MissingFile(rel.to_string())
                     } else {
@@ -103,7 +198,7 @@ impl SaveSource {
 
     pub fn exists(&self, rel: &str) -> bool {
         match self {
-            SaveSource::Folder(root) => root.join(rel).is_file(),
+            SaveSource::Folder(root) => path_is_file(&root.join(rel)),
             SaveSource::Zip { files, root, .. } => {
                 files.contains_key(&format!("{root}{}", normalize(rel)))
             }
@@ -126,12 +221,22 @@ impl SaveSource {
     /// Player folders (`Villager0` … `Villager7`), sorted numerically.
     pub fn player_dirs(&self) -> Result<Vec<String>> {
         let mut dirs: Vec<String> = match self {
-            SaveSource::Folder(root) => fs::read_dir(root)?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .filter_map(|e| e.file_name().to_str().map(str::to_string))
-                .filter(|n| is_player_dir(n))
-                .collect(),
+            SaveSource::Folder(_root) => {
+                #[cfg(target_os = "horizon")]
+                {
+                    // Horizon's Rust dirent layout truncates names; ACNH has Villager0–7.
+                    (0..8).map(|i| format!("Villager{i}")).collect()
+                }
+                #[cfg(not(target_os = "horizon"))]
+                {
+                    fs::read_dir(_root)?
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                        .filter(|n| is_player_dir(n))
+                        .collect()
+                }
+            }
             SaveSource::Zip { files, root, .. } => {
                 let mut set = std::collections::BTreeSet::new();
                 for k in files.keys() {
@@ -223,7 +328,7 @@ fn player_dir_index(name: &str) -> u32 {
 /// Writes via a temporary file + rename so a crash never leaves a half written save.
 pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        create_dir_all(parent)?;
     }
     let tmp = path.with_extension("nhse-tmp");
     {
@@ -242,10 +347,34 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 /// the old file is removed and the rename retried.
 fn rename_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     match fs::rename(from, to) {
-        Err(_) if to.is_file() => {
+        Err(_) if path_is_file(to) => {
             fs::remove_file(to)?;
             fs::rename(from, to)
         }
         r => r,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reads_across_chunks_without_a_size_hint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.dat");
+        let data = (0..131_073).map(|i| i as u8).collect::<Vec<_>>();
+        std::fs::write(&path, &data).unwrap();
+        assert_eq!(super::read_file(&path).unwrap(), data);
+    }
+
+    #[test]
+    fn creates_existing_and_nested_directories_but_rejects_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        super::create_dir_all(dir.path()).unwrap();
+        let nested = dir.path().join("a/b");
+        super::create_dir_all(&nested).unwrap();
+        super::create_dir_all(&nested).unwrap();
+        let file = nested.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(super::create_dir_all(&file).is_err());
     }
 }

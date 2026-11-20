@@ -72,6 +72,12 @@ pub trait Platform {
     /// Mounts Animal Crossing's save data of `user` and returns its root folder. Writes only
     /// take effect after [`Platform::commit_game_save`].
     fn mount_game_save(&mut self, user: &UserAccount) -> Result<PathBuf, String>;
+    /// Names and directory flags from the mounted game save.
+    fn game_entries(&self, path: &std::path::Path) -> Result<Vec<(String, bool)>, String>;
+    /// Clears NHSE's private SD working copy before recopying a save.
+    fn clear_work_dir(&self, path: &std::path::Path) -> Result<(), String>;
+    /// Removes one backup folder or its temporary .part folder.
+    fn clear_backup_dir(&self, path: &std::path::Path) -> Result<(), String>;
     fn commit_game_save(&mut self) -> Result<(), String>;
     fn unmount_game_save(&mut self);
     /// The app's own folder (backups, working copies).

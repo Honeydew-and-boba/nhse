@@ -1,6 +1,6 @@
 //! Runs the Switch app on the desktop against synthetic saves and writes screenshots.
 //!
-//!   cargo run -p nhse-switch --example preview -- <output folder>
+//!   cargo run -p nhse-switch --example preview -- <output folder> [--dark]
 use nhse_switch::host::{HostPlatform, Step};
 use nhse_switch::platform::btn::*;
 
@@ -23,6 +23,35 @@ fn main() {
         Press(A),
         shot("03-editor"),
     ];
+    script.extend(d(11)); // Map (new editors follow the existing save actions)
+    script.extend([
+        Press(A),
+        shot("19-map"),
+        Press(B),
+        Press(DOWN),
+        Press(A),
+        shot("20-designs"),
+        Press(A),
+        Press(A),
+        shot("21-pixels"),
+        Press(B),
+        Press(B),
+        Press(B),
+        Press(DOWN),
+        Press(A),
+        shot("22-houses"),
+        Press(A),
+        shot("23-house"),
+    ]);
+    script.extend(d(4));
+    script.extend([
+        Press(A),
+        shot("24-room"),
+        Press(B),
+        Press(B),
+        Press(B),
+        Press(ZL),
+    ]);
     script.extend([Press(A), shot("04-player"), Press(A)]); // wallet → 54321
     script.extend(d(6)); // → Pockets
     script.extend([Press(A)]);
@@ -82,6 +111,7 @@ fn main() {
     ]);
     script.extend([Press(B), Press(B), Press(PLUS), shot("18-quit")]);
     let mut p = HostPlatform::new(root, &["Player 1", "Player 2"], script, &out);
+    p.system_dark = std::env::args().any(|arg| arg == "--dark");
     p.keyboard.push_back(Some("54321".into()));
     p.keyboard.push_back(Some("wood".into()));
     let mut app = nhse_switch::app(Box::new(p));

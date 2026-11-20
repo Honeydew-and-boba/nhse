@@ -3,6 +3,7 @@ use nhse_core::save::player::PlayerList;
 use nhse_core::HorizonSave;
 use nhse_switch::host::{HostPlatform, Step};
 use nhse_switch::platform::btn::*;
+use nhse_switch::platform::Platform;
 use std::path::Path;
 use Step::*;
 
@@ -45,6 +46,63 @@ fn read_dir_bytes(p: &Path) -> Vec<(String, Vec<u8>)> {
 /// Home → game save of USER → first resident → wallet.
 fn open_game_and_set_wallet() -> Vec<Step> {
     vec![Press(A), Press(A), Press(A), Press(A)]
+}
+
+#[test]
+fn opening_game_again_replaces_stale_work_copy() {
+    let tmp = setup();
+    let root = tmp.path();
+    let mut platform = HostPlatform::new(root, &[USER], vec![], &root.join("shots"));
+    let user = platform.users().unwrap().remove(0);
+    let first = nhse_switch::session::open_game(&mut platform, &user).unwrap();
+    let stale = first.save.source.location().join("stale.txt");
+    std::fs::write(&stale, "left from a failed copy").unwrap();
+
+    let second = nhse_switch::session::open_game(&mut platform, &user).unwrap();
+    assert!(!stale.exists());
+    assert_eq!(second.save.players.len(), 2);
+}
+
+#[test]
+fn opening_game_stops_when_backup_cannot_be_created() {
+    let tmp = setup();
+    let root = tmp.path();
+    let backups = root.join("sd/switch/nhse/backups");
+    std::fs::create_dir_all(backups.parent().unwrap()).unwrap();
+    std::fs::write(&backups, b"blocked").unwrap();
+    let before = read_dir_bytes(&HostPlatform::game_dir(root, USER));
+    let mut platform = HostPlatform::new(root, &[USER], vec![], &root.join("shots"));
+    let user = platform.users().unwrap().remove(0);
+    assert!(nhse_switch::session::open_game(&mut platform, &user).is_err());
+    assert_eq!(before, read_dir_bytes(&HostPlatform::game_dir(root, USER)));
+}
+
+#[test]
+fn backups_are_listed_with_sizes_and_can_be_deleted() {
+    let tmp = setup();
+    let root = tmp.path();
+    let mut platform = HostPlatform::new(root, &[USER], vec![], &root.join("shots"));
+    let user = platform.users().unwrap().remove(0);
+    nhse_switch::session::open_game(&mut platform, &user).unwrap();
+    let backups = nhse_switch::session::list_backups(&platform);
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0].size > 0);
+    nhse_switch::session::delete_backup(&platform, &backups[0]).unwrap();
+    assert!(nhse_switch::session::list_backups(&platform).is_empty());
+}
+
+#[test]
+fn restore_refuses_different_player_file_sets() {
+    let tmp = setup();
+    let root = tmp.path();
+    let mut platform = HostPlatform::new(root, &[USER], vec![], &root.join("shots"));
+    let user = platform.users().unwrap().remove(0);
+    let before = read_dir_bytes(&HostPlatform::game_dir(root, USER));
+    nhse_switch::session::open_sd(&platform, &root.join("sd/dumps/island")).unwrap();
+    let backup = nhse_switch::session::list_backups(&platform).remove(0);
+    let err = nhse_switch::session::restore_backup(&mut platform, &backup, &user).unwrap_err();
+    assert!(err.contains("different file sets"), "{err}");
+    assert_eq!(before, read_dir_bytes(&HostPlatform::game_dir(root, USER)));
 }
 
 #[test]
@@ -112,8 +170,12 @@ fn sd_save_bulk_edits_are_saved() {
     let tmp = setup();
     let root = tmp.path();
     let d = |n| std::iter::repeat_n(Press(DOWN), n);
-    // Home → SD card → dumps/ → island/ (opens) → resident → recipes
-    let mut script = vec![Press(DOWN), Press(A), Press(A), Press(A), Press(A)];
+    // Home → SD card → dumps/ → island/ → select current folder → resident → recipes
+    let mut script = vec![
+        Press(DOWN), Press(A), Press(A), // Browse to dumps/.
+        Press(Y), Press(A),             // Reject the parent and dismiss the message.
+        Press(A), Press(Y), Press(A),   // Enter island/, select it, and open the resident.
+    ];
     script.extend(d(8)); // Wallet … Poki, Pockets, Storage, Recipes
     script.extend([Press(A), Press(A), Press(PLUS)]);
     let app = run(root, script, &[], false);
