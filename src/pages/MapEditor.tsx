@@ -8,7 +8,7 @@ import { enumOptions, prettify } from "../components/Widgets";
 import { api, type Arrangement, type Building, type ClearKind, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
-import { EXT_ID, NONE_ID, buildingDoors, buildingFootprint, buildingMovable, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
+import { EXT_ID, NONE_ID, asset, buildingDoors, buildingFootprint, buildingMovable, buildingRects, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
 import { useGD, useStore } from "../lib/store";
 import { MOD } from "../lib/util";
 
@@ -27,11 +27,59 @@ const CLEAR_KINDS: [ClearKind, string][] = [
 
 const rgbCache = new Map<number, [number, number, number]>();
 
+/** Four-way "drag me" badge: dark disc, white arrows. */
+const drawMoveBadge = (ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) => {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(27,27,27,0.92)"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.14); ctx.stroke();
+  const a = r * 0.6, h = Math.max(1.5, r * 0.3);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.2); ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(cx - a, cy); ctx.lineTo(cx + a, cy);
+  ctx.moveTo(cx, cy - a); ctx.lineTo(cx, cy + a);
+  ctx.stroke();
+  ctx.lineCap = "butt";
+  ctx.fillStyle = "#fff";
+  for (const [sx, sy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * a, cy + sy * a);
+    ctx.lineTo(cx + sx * a - sx * h - sy * h * 0.8, cy + sy * a - sy * h + sx * h * 0.8);
+    ctx.lineTo(cx + sx * a - sx * h + sy * h * 0.8, cy + sy * a - sy * h - sx * h * 0.8);
+    ctx.closePath(); ctx.fill();
+  }
+};
+
+/**
+ * A measured entrance: a translucent plate marks the door zone (and the drag hit area), and a
+ * one-terrain-tile door glyph with a drag badge sits in its middle.
+ */
+const drawDoorZone = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, s: number, hot: boolean, glyph = true) => {
+  ctx.fillStyle = hot ? "rgba(255,214,64,0.30)" : "rgba(255,214,64,0.16)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = hot ? "rgba(255,214,64,0.95)" : "rgba(255,214,64,0.55)";
+  ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.setLineDash([]);
+  if (!glyph) return;
+  const d = Math.min(2 * s, w * 0.92, h * 0.92); // one terrain tile is 2 item tiles
+  const cx = x + w / 2, cy = y + h / 2;
+  if (d >= 20) {
+    const gw = d * 0.6, gh = d * 0.86;
+    ctx.fillStyle = "rgba(255,246,214,0.95)";
+    ctx.fillRect(cx - gw / 2, cy - gh / 2, gw, gh);
+    ctx.strokeStyle = "rgba(20,20,20,0.8)"; ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - gw / 2 + 0.5, cy - gh / 2 + 0.5, gw - 1, gh - 1);
+    drawMoveBadge(ctx, cx, cy, Math.max(4, d * 0.17));
+  } else if (d >= 8) {
+    drawMoveBadge(ctx, cx, cy, Math.max(3, d * 0.28));
+  }
+};
+
 /** Fill colour per building category: houses, villagers, shops, civic, campsite, transport, special. */
 const buildingColor = (kind: number): [number, number, number] => {
   if (kind <= 8) return [91, 140, 255];
   if (kind <= 18) return [43, 182, 163];
-  if (kind === 19 || kind === 24) return [76, 175, 80];
+  if (kind === 19 || kind === 24) return [211, 61, 61];
   if (kind === 20 || kind === 21) return [156, 107, 255];
   if (kind === 25) return [255, 159, 67];
   if (kind === 22 || kind === 23 || kind === 26 || kind === 27) return [136, 153, 170];
@@ -55,7 +103,7 @@ export default function MapEditor() {
   const [selTile, setSelTile] = useState<[number, number] | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [brush, setBrush] = useState<Item>({ ...NONE_ITEM });
-  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true });
+  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
@@ -66,6 +114,10 @@ export default function MapEditor() {
   const wrap = useRef<HTMLDivElement>(null);
   const layerCanvas = useRef<(HTMLCanvasElement | null)[]>([null, null]);
   const sprites = useRef(new Map<string, HTMLImageElement | null>());
+  /** Thumbnails for placed ground designs, keyed by normal design index. */
+  const designs = useRef(new Map<number, HTMLImageElement | null>());
+  /** Cache-busts design URLs once per mount so an edited design is reloaded. */
+  const designEpoch = useRef(Date.now()).current;
   const syncChain = useRef<Promise<unknown>>(Promise.resolve());
   const [loaded, setLoaded] = useState(false);
   // side panel state lives here so it survives the frequent re-renders caused by the canvas
@@ -129,6 +181,18 @@ export default function MapEditor() {
     return c;
   };
   const changed = (l: number) => { layerCanvas.current[l] = null; setVer((v) => v + 1); };
+  /** Loads a normal design thumbnail once; null while it loads (or if it fails). */
+  const designImage = (index: number) => {
+    let img = designs.current.get(index);
+    if (img === undefined) {
+      const im = new Image();
+      designs.current.set(index, null);
+      im.onload = () => { designs.current.set(index, im); setVer((v) => v + 1); };
+      im.src = asset(`design/normal/${index}?r=${designEpoch}`);
+      img = null;
+    }
+    return img;
+  };
   const sync = (l: number) => {
     const bytes = writeItems(layers.current[l]);
     syncChain.current = syncChain.current.then(() => api.setFieldLayer(l, bytes)).then(touch).catch((e) => toast("error", "Could not save map changes", String(e)));
@@ -180,6 +244,28 @@ export default function MapEditor() {
       if (show.plaza && meta) {
         ctx.fillStyle = "rgba(150,155,165,0.35)";
         ctx.fillRect(px + meta.plaza.x * s, py + meta.plaza.z * s, PLAZA_W * s, PLAZA_H * s);
+      }
+      // placed custom designs sit on the ground under every item; each design tile is one
+      // terrain tile (2×2 items) and is aligned to the field layer, so layer tile / 2.
+      if (show.designs && meta) {
+        const [dw, dh] = meta.design_dims;
+        const d2 = 2 * s;
+        const gx0 = Math.max(0, Math.floor(-ox / d2)), gy0 = Math.max(0, Math.floor(-oy / d2));
+        const gx1 = Math.min(dw, Math.ceil((cw - ox) / d2)), gy1 = Math.min(dh, Math.ceil((ch - oy) / d2));
+        for (let x = gx0; x < gx1; x++) for (let y = gy0; y < gy1; y++) {
+          const v = meta.design_tiles[x * dh + y];
+          if (v === 0xf800) continue;
+          const dx = ox + x * d2, dy = oy + y * d2;
+          // Normal slots are proven (0..pattern_count-1); anything else keeps a plain marker
+          // until the PRO encoding is measured. See docs/map-editor.md.
+          const known = v < save!.pattern_count;
+          const img = known ? designImage(v) : null;
+          if (img) { ctx.drawImage(img, dx, dy, d2, d2); continue; }
+          ctx.fillStyle = known ? "rgba(255,61,161,0.12)" : "rgba(255,61,161,0.28)";
+          ctx.fillRect(dx, dy, d2, d2);
+          ctx.strokeStyle = "rgba(255,61,161,0.75)"; ctx.lineWidth = 1;
+          ctx.strokeRect(dx + 0.5, dy + 0.5, d2 - 1, d2 - 1);
+        }
       }
       if (show.other) { ctx.globalAlpha = 0.3; ctx.drawImage(layerImage(1 - layer), ox, oy, L.width * s, L.height * s); }
       ctx.globalAlpha = 0.92;
@@ -249,56 +335,50 @@ export default function MapEditor() {
       if (show.buildings && buildings) {
         ctx.font = `600 ${Math.max(10, Math.min(13, s * 2))}px Inter, system-ui`;
         ctx.textAlign = "center";
+        const hoverIdx = hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) : -1;
         buildings.forEach((b, i) => {
           if (!b.kind) return;
-          const [fw, fh] = buildingFootprint(gd, b.kind);
-          const w = fw * 2 * s, h = fh * 2 * s;
-          const x = px + (b.x - fw) * s, y = py + (b.y - fh) * s;
           const sel = i === selBuilding;
           const [r, g, bl] = buildingColor(b.kind);
-          ctx.fillStyle = `rgba(${r},${g},${bl},${sel ? 0.5 : 0.26})`;
-          ctx.fillRect(x, y, w, h);
-          ctx.strokeStyle = sel ? "#fff" : `rgba(${r},${g},${bl},0.9)`; ctx.lineWidth = 1.5;
-          ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-          // corner ticks make the plot edges readable at a glance
-          if (Math.min(w, h) >= 16) {
-            const c = Math.min(10, w / 4, h / 4);
-            ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.9)"; ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
-            ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
-            ctx.moveTo(x + w, y + h - c); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - c, y + h);
-            ctx.moveTo(x + c, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - c);
-            ctx.stroke();
-          }
-          // entrance markers: also the drag handles
-          const rects = buildingDoors(gd, b.kind);
+          const edge = sel ? "#fff" : `rgba(${r},${g},${bl},0.9)`;
+          const rects = buildingRects(gd, b.kind);
           for (const [dx, dy, dw, dh] of rects) {
-            const dX = px + (b.x + dx) * s, dY = py + (b.y + dy) * s;
-            ctx.fillStyle = sel ? "rgba(255,214,64,0.95)" : "rgba(255,214,64,0.75)";
-            ctx.fillRect(dX, dY, dw * s, dh * s);
-            ctx.strokeStyle = "rgba(20,20,20,0.9)"; ctx.lineWidth = 1;
-            ctx.strokeRect(dX + 0.5, dY + 0.5, dw * s - 1, dh * s - 1);
+            const x = px + (b.x + dx) * s, y = py + (b.y + dy) * s;
+            const w = dw * s, h = dh * s;
+            ctx.fillStyle = `rgba(${r},${g},${bl},${sel ? 0.5 : 0.26})`;
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = edge; ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+            // corner ticks make the edges readable at a glance
+            if (Math.min(w, h) >= 16) {
+              const c = Math.min(10, w / 4, h / 4);
+              ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.9)"; ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+              ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+              ctx.moveTo(x + w, y + h - c); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - c, y + h);
+              ctx.moveTo(x + c, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - c);
+              ctx.stroke();
+            }
           }
-          if (rects.length) {
-            const [dx, dy, dw, dh] = rects[0];
-            const hx = px + (b.x + dx + dw / 2) * s, hy = py + (b.y + dy + dh / 2) * s;
-            ctx.beginPath(); ctx.arc(hx, hy, Math.max(3, Math.min(7, s * 0.8)), 0, Math.PI * 2);
-            ctx.fillStyle = "#1b1b1b"; ctx.fill();
-            ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
-          } else {
+          // entrances: a translucent plate marks the door zone, the glyph is the drag handle
+          const doors = buildingDoors(gd, b.kind);
+          doors.forEach(([dx, dy, dw, dh], di) => {
+            drawDoorZone(ctx, px + (b.x + dx) * s, py + (b.y + dy) * s, dw * s, dh * s, s, sel || hoverIdx === i, di === 0);
+          });
+          if (!doors.length) {
             // no measured door: a neutral centre handle still allows dragging
-            const hx = px + b.x * s, hy = py + b.y * s;
-            ctx.beginPath(); ctx.arc(hx, hy, Math.max(3, Math.min(6, s * 0.7)), 0, Math.PI * 2);
-            ctx.fillStyle = "rgba(235,235,240,0.85)"; ctx.fill();
-            ctx.strokeStyle = "#1b1b1b"; ctx.lineWidth = 1.5; ctx.stroke();
+            drawMoveBadge(ctx, px + b.x * s, py + b.y * s, Math.max(3, Math.min(6, s * 0.7)));
           }
           if (s >= 2) {
+            const [bdx, , bdw] = rects[0];
+            const bottom = Math.max(...rects.map((d) => d[1] + d[3]), ...doors.map((d) => d[1] + d[3]));
             const label = buildingName(b.kind);
             ctx.fillStyle = "rgba(0,0,0,0.55)";
             const tw = ctx.measureText(label).width + 8;
-            ctx.fillRect(x + w / 2 - tw / 2, y + h + 2, tw, 16);
-            ctx.fillStyle = "#fff"; ctx.fillText(label, x + w / 2, y + h + 14);
+            const lx = px + (b.x + bdx + bdw / 2) * s, ly = py + (b.y + bottom) * s;
+            ctx.fillRect(lx - tw / 2, ly + 2, tw, 16);
+            ctx.fillStyle = "#fff"; ctx.fillText(label, lx, ly + 14);
           }
         });
         ctx.textAlign = "start";
@@ -400,8 +480,8 @@ export default function MapEditor() {
         const mx = tx + L.offset_x, my = ty + L.offset_y;
         const hit = buildings.findIndex((b) => {
           if (!b.kind) return false;
-          const [fw, fh] = buildingFootprint(gd, b.kind);
-          return mx >= b.x - fw && mx < b.x + fw && my >= b.y - fh && my < b.y + fh;
+          return buildingRects(gd, b.kind).some(([dx, dy, dw, dh]) =>
+            mx >= b.x + dx && mx < b.x + dx + dw && my >= b.y + dy && my < b.y + dy + dh);
         });
         if (hit >= 0) { setSelBuilding(hit); setPanel("buildings"); return; }
       }
@@ -548,6 +628,9 @@ export default function MapEditor() {
 
   if (!loaded || !meta || !buildings) return <Loading />;
   const hovered = hover && inLayer(hover[0], hover[1]) ? grid().get(hover[0], hover[1]) : null;
+  const hoverDesign = hover && inLayer(hover[0], hover[1]) && meta
+    ? meta.design_tiles[(hover[0] >> 1) * meta.design_dims[1] + (hover[1] >> 1)]
+    : 0xf800;
   const acreLabel = (x: number, y: number) => { const mx = x + L.offset_x, my = y + L.offset_y; return String.fromCharCode(65 + Math.floor(mx / 32)) + (Math.floor(my / 32) + 1); };
   const hoverDoor = tool === "inspect" && show.buildings && hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) >= 0 : false;
   const cursor = pick ? "crosshair" : bdrag.current ? "grabbing" : tool === "pan" ? "grab" : tool === "inspect" ? (hoverDoor ? "grab" : "default") : "crosshair";
@@ -574,7 +657,7 @@ export default function MapEditor() {
           {tool === "rect" && clip.current && <Button size="sm" icon={<ClipboardPaste />} onClick={() => { pasteMode.current = true; toast("info", "Click on the map to paste"); }}>Paste</Button>}
           <div style={{ flex: 1 }} />
           <MenuButton label="View" icon={<Eye />} size="sm" align="right" items={([
-            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"],
+            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"], ["designs", "Ground designs"],
           ] as [keyof typeof show, string][]).map(([k, label]) => ({ label, icon: show[k] ? <CheckIcon /> : <span style={{ width: 14 }} />, onClick: () => setShow({ ...show, [k]: !show[k] }) }))} />
           <div className="row" style={{ gap: 4 }}>
             <Button size="sm" iconOnly icon={<ZoomOut />} onClick={() => zoomBy(0.8)} title="Zoom out (−)" />
@@ -587,7 +670,7 @@ export default function MapEditor() {
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
           {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the building · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · Ground design {hoverDesign < save!.pattern_count ? `#${hoverDesign}` : `0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>

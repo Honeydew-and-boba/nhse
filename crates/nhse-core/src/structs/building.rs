@@ -47,8 +47,9 @@ impl Building {
     }
 }
 
-/// One part of a building's entrance, in item tiles relative to [`Building::x`]/[`Building::y`]:
-/// it covers `x + dx .. x + dx + w` × `y + dy .. y + dy + h`.
+/// A rectangle in item tiles relative to [`Building::x`]/[`Building::y`]: it covers
+/// `x + dx .. x + dx + w` × `y + dy .. y + dy + h`. Used for entrances ([`doors`]) and for the
+/// part of a structure that is actually built ([`body`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DoorRect {
     pub dx: i16,
@@ -57,17 +58,22 @@ pub struct DoorRect {
     pub h: u16,
 }
 
-const fn door(dx: i16, dy: i16, w: u16, h: u16) -> DoorRect {
+const fn rect(dx: i16, dy: i16, w: u16, h: u16) -> DoorRect {
     DoorRect { dx, dy, w, h }
 }
 
 const NO_DOORS: &[DoorRect] = &[];
-const PLAYER_DOORS: &[DoorRect] = &[door(-2, 2, 4, 3)];
-const VILLAGER_DOORS: &[DoorRect] = &[door(-1, 2, 4, 3)];
-const NOOKS_DOORS: &[DoorRect] = &[door(-2, 2, 4, 2)];
-const MUSEUM_DOORS: &[DoorRect] = &[door(-2, 4, 4, 1)];
-const ABLES_DOORS: &[DoorRect] = &[door(-1, 2, 6, 2), door(0, 4, 4, 1)];
-const CAMPSITE_DOORS: &[DoorRect] = &[door(-2, 4, 4, 2)];
+const PLAYER_DOORS: &[DoorRect] = &[rect(-2, 2, 4, 3)];
+const VILLAGER_DOORS: &[DoorRect] = &[rect(-1, 2, 4, 3)];
+const NOOKS_DOORS: &[DoorRect] = &[rect(-2, 2, 4, 2)];
+const MUSEUM_DOORS: &[DoorRect] = &[rect(-2, 4, 4, 1)];
+const ABLES_DOORS: &[DoorRect] = &[rect(-1, 2, 6, 2), rect(0, 4, 4, 1)];
+const CAMPSITE_DOORS: &[DoorRect] = &[rect(-2, 4, 4, 2)];
+
+/// The built part of a villager house: the back three terrain rows of its four-tile plot. The front
+/// row (and the corners beside the door mat) are open ground. Measured in-game against Villager 4,
+/// whose plot is 90..97 × 142..149, house 90..97 × 142..147 and door 93..96 × 148..150.
+const VILLAGER_BODY: &[DoorRect] = &[rect(-4, -4, 8, 6)];
 
 /// Measured entrances for the structures whose doors are known. Several buildings have no
 /// reliable measurements yet, so this is deliberately partial.
@@ -89,6 +95,16 @@ pub fn movable(kind: u16) -> bool {
     matches!(kind, 1..=19 | 21 | 24 | 25)
 }
 
+/// The part of a structure that is actually built, as rectangles in item tiles relative to the
+/// centre. An empty slice means "the whole plot from [`footprint`]", which is the case for every
+/// kind not measured yet. Free ground inside the plot but outside these rectangles stays clear.
+pub fn body(kind: u16) -> &'static [DoorRect] {
+    match kind {
+        9..=18 => VILLAGER_BODY,
+        _ => &[],
+    }
+}
+
 /// Plot the game requires for a structure, in terrain tiles (16 per acre).
 /// [`Building::x`]/[`Building::y`] is the centre of this plot in item tiles (32 per acre);
 /// the plot covers `x - width ..= x + width - 1` and `y - height ..= y + height - 1`
@@ -96,7 +112,8 @@ pub fn movable(kind: u16) -> bool {
 ///
 /// Player houses, villager houses, Nook's Cranny, the museum and Able Sisters are
 /// verified against paths in real saves or the widely documented plot sizes. The rest
-/// are approximations and are only drawn, never written back.
+/// are approximations and are only drawn, never written back. For villager houses the plot is
+/// larger than the house itself — see [`body`] for the part that is actually built.
 pub fn footprint(kind: u16) -> (u16, u16) {
     match kind {
         1..=8 => (5, 4),  // player houses
@@ -157,6 +174,26 @@ mod tests {
         ); // Able Sisters
         assert_eq!(door(25, 136, 106), vec![(134, 110, 137, 111)]); // campsite
         assert!(doors(20).is_empty()); // Resident Services: not measured
+    }
+
+    #[test]
+    fn villager_body_leaves_the_front_row_clear() {
+        // Villager 4: plot 90..97 × 142..149, house 90..97 × 142..147, door 93..96 × 148..150.
+        let (x, y) = (94, 146);
+        let house = body(9);
+        assert_eq!(house.len(), 1);
+        let b = house[0];
+        assert_eq!(
+            (
+                x + b.dx as i32,
+                y + b.dy as i32,
+                x + b.dx as i32 + b.w as i32 - 1,
+                y + b.dy as i32 + b.h as i32 - 1
+            ),
+            (90, 142, 97, 147)
+        );
+        assert!(body(1).is_empty()); // player house: not measured yet
+        assert!(body(24).is_empty()); // Able Sisters: not measured yet
     }
 
     #[test]

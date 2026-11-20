@@ -66,7 +66,7 @@ What was done for Windows (2026-11-16):
 
 - `src-tauri/tauri.conf.json`: `bundle.targets` was macOS-only `["app", "dmg"]`; it is now `"all"`
   (dmg + app on macOS, NSIS + MSI on Windows).
-- Shortcut hints in the UI were hard-coded `⌘`. They now use `MOD` from `src/lib/util.ts`
+- Shortcut hints in the UI were hard-coded `⌘`. Hints now use `MOD` from `src/lib/util.ts`
   (`⌘` on macOS, `Ctrl` on Windows). Use `MOD` for any new hint.
 - `.github/workflows/build-macos.yml` (file kept, workflow renamed "Build desktop app") has a
   `windows` job that builds the NSIS installer and uploads it as an artifact.
@@ -88,7 +88,7 @@ Verified on Windows 11 (Rust 1.100, MSVC 14.51, Node 26, WebView2 157):
 - `npx tauri build --bundles nsis` — produces `target/release/bundle/nsis/NHSE_4.0.0_x64-setup.exe`.
 - `target\release\nhse.exe` starts and shows a responsive window, sprites load.
 - Opened, edited and saved a real **Switch 1** save with the app on Windows, and the changes loaded in
-  an emulator without a crash (user-tested, one dump).
+  an emulator without a crash (tested manually, one dump).
 
 Windows quirks worth knowing:
 
@@ -98,27 +98,40 @@ Windows quirks worth knowing:
 - `npm ci` may report esbuild's postinstall script as blocked; the build still works (the binary
   ships as a platform optional dependency).
 - Backups already avoid Windows-illegal characters in file names (`clean_file_name`).
+- The Backups page "Show folder" button uses `revealItemInDir(backups_dir + "/.")`. The trailing
+  `/.` is a macOS idiom, but on Windows the path goes through `GetFullPathNameW`, which collapses it,
+  so the button works: it opens the parent folder with the backups folder selected. It selects the
+  folder rather than opening its contents; switching to `openPath` would need `opener:allow-open-path`
+  in `src-tauri/capabilities/default.json`.
 
 Not done yet on Windows:
 
 - Nothing is published for Windows: `release.yml` still builds macOS + `nhse.nro` only. Adding a
   Windows job there needs care so two jobs don't race to create the same release.
-- `revealItemInDir(info.backups_dir + "/.")` in `src/pages/Backups.tsx` is a macOS idiom; check the
-  Backups page "Show folder" button on Windows.
 
-## My goals for this fork (NOT implemented yet — do not assume they are done)
+## Goals for this fork (status — do not assume the rest are done)
 
-- Save compatibility with **Switch 1** saves (`main.dat` from the original Switch, not just Switch 2 dumps). One real Switch 1 dump round-tripped on Windows (open → edit → save → emulator loads it), so this looks good; still verify other revisions before claiming support.
-- Possible feature expansion: **custom designs** and **map editing** (both already exist on desktop — extend rather than rebuild).
-- **Map editor QoL** (in progress on `map-editor-qol`): buildings draw as their real footprints with doors, a drag handle and fixed-building warnings. Next: verify in-game, fill in the remaining building sizes/doors, and test rotated buildings.
-- **Map editor polish** (not started): shop fill colours blend into the grass (green); door markers look neither grabbable nor like doors; custom design path patterns are not drawn correctly in the map editor.
+- **Map editor QoL** (in progress on `map-editor-qol`): footprints, doors, drag handles and
+  fixed-building warnings are in. Doors draw as a translucent plate with a one-terrain-tile glyph and
+  a four-way move badge; only the first part of a multi-part door gets the glyph. Villager houses
+  draw their built body (`building.rs::body`) so the open front row stays clear. Next: verify
+  in-game, fill in the remaining building sizes/doors, and test rotated buildings.
+- **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
+  their normal 32×32 thumbnails, with a hover index and a View toggle; PRO values still show as
+  markers because their value encoding is unmeasured. Notes in `docs/map-editor.md`.
+- **Map editor: favourites** (not started): a quick-access palette of favourite patterns and paths.
+  Notes in `docs/map-editor.md`.
+- **Map editor: path painting** (not started): brushes for terrain/road families and placed custom
+  designs; today the editor only inspects terrain and imports whole dumps. Notes in
+  `docs/map-editor.md`.
 
 Branches (2026-11-19): local `master` tracks `upstream/master` at `f85aee6` (the `windows-build`
 merge); `windows-build` is a stale local branch. `design-pattern-qol` is 4 commits ahead of
 `master`, local only (the old `origin` branch is gone), and carries the `.acnh` import, usage-flag
 fix and editor QoL work; details in `docs/designs.md`. `map-editor-qol` is branched from
-`design-pattern-qol` and adds the footprint, door, drag and warning work in `docs/map-editor.md`.
-`origin` (`Honeydew-and-boba/nhse`) currently has only `master`; neither QoL branch has been pushed.
+`design-pattern-qol` and adds the footprint, door, drag, warning and ground-design work in
+`docs/map-editor.md`. `origin` (`Honeydew-and-boba/nhse`) currently has only `master`; neither QoL
+branch has been pushed.
 
-Remotes: `origin` is my fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.
+Remotes: `origin` is the fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.

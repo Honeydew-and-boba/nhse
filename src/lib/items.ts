@@ -78,6 +78,15 @@ export function buildingFootprint(gd: GameData, kind: number): [number, number] 
 /** Entrance rectangles as `[dx, dy, w, h]` in item tiles from the building centre. */
 export type DoorRect = [number, number, number, number];
 export const buildingDoors = (gd: GameData, kind: number): DoorRect[] => gd.building_doors[kind] ?? [];
+/** Built parts as `[dx, dy, w, h]` in item tiles from the centre; empty means "the whole plot". */
+export const buildingBodies = (gd: GameData, kind: number): DoorRect[] => gd.building_bodies?.[kind] ?? [];
+/** The rectangles that make up the drawn building: the measured body, or the plot when unknown. */
+export function buildingRects(gd: GameData, kind: number): DoorRect[] {
+  const bodies = buildingBodies(gd, kind);
+  if (bodies.length) return bodies;
+  const [fw, fh] = buildingFootprint(gd, kind);
+  return [[-fw, -fh, fw * 2, fh * 2]];
+}
 export const buildingMovable = (gd: GameData, kind: number) => gd.movable_buildings.includes(kind);
 
 export const hex = (n: number, w = 4) => n.toString(16).toUpperCase().padStart(w, "0");
