@@ -114,18 +114,18 @@ Not done yet on Windows:
 - **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
   draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
   first part of a multi-part door gets the glyph. Villager houses draw their built body
-  (`building.rs::body`) so the open front row stays clear. Next: verify in-game, fill in the
-  remaining building sizes/doors, and test rotated buildings.
+  (`building.rs::body`) so the open front row stays clear. Buildings cannot be rotated: the Angle
+  field and `set_buildings` reject a change (`building.rs::angle_ok`), except for bridges and
+  inclines whose angle is real terrain data. Next: verify in-game, fill in the remaining building
+  sizes/doors, and check dragging the bridge.
 - **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
-  their normal 32×32 thumbnails, with a hover index and a View toggle; PRO values still show as
-  markers because their value encoding is unmeasured. Notes in `docs/map-editor.md`.
+  their normal 32×32 thumbnails, with a hover index and a View toggle. PRO designs cannot be placed
+  on the ground in game (mannequin/painting only), so values at or above `pattern_count` are an
+  unknown value and keep the magenta marker. Notes in `docs/map-editor.md`.
 - **Map editor: path painting**: the Item panel's Ground section paints the eight default path
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
   save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
-  PRO designs are still skipped. Next: test painted paths and designs in-game. Notes in
-  `docs/map-editor.md`.
-- **Map editor: favourites** (not started): a quick-access palette of favourite patterns and paths.
-  Notes in `docs/map-editor.md`.
+  Next: test painted paths and designs in-game. Notes in `docs/map-editor.md`.
 - **Map editor: terrain/water/cliff painting** (not started): only the road layer and ground
   designs are painted; `TerrainTile.model` (rivers, cliffs, elevation) is still import/export only.
   Notes in `docs/map-editor.md`.

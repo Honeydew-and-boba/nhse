@@ -173,7 +173,8 @@ export default function MapEditor() {
     setView({ s, x: (r.width - MAP_W * s) / 2, y: (r.height - MAP_H * s) / 2 });
   }, [loaded]);
 
-  // non-empty normal designs for the ground palette; PRO designs are skipped for now
+  // non-empty normal designs for the ground palette; PRO designs cannot be placed on the ground
+  // in game, so they are never offered
   useEffect(() => {
     if (!loaded) return;
     api.designs("normal").then((d) => setPatterns(d.filter((p) => !p.empty))).catch(() => setPatterns([]));
@@ -302,8 +303,8 @@ export default function MapEditor() {
           const v = meta.design_tiles[x * dh + y];
           if (v === 0xf800) continue;
           const dx = ox + x * d2, dy = oy + y * d2;
-          // Normal slots are proven (0..pattern_count-1); anything else keeps a plain marker
-          // until the PRO encoding is measured. See docs/map-editor.md.
+          // Normal slots are proven (0..pattern_count-1); the game never puts a PRO design on the
+          // ground, so anything else is an unknown value and keeps a plain marker. See docs/map-editor.md.
           const known = v < save!.pattern_count;
           const img = known ? designImage(v) : null;
           if (img) { ctx.drawImage(img, dx, dy, d2, d2); continue; }
@@ -791,7 +792,7 @@ export default function MapEditor() {
             onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
           {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the building · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · Ground design {hoverDesign < save!.pattern_count ? `#${hoverDesign}` : `0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · {hoverDesign < save!.pattern_count ? `Ground design #${hoverDesign}` : `Unknown ground value 0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>
@@ -863,7 +864,7 @@ export default function MapEditor() {
           <div className="tiny faint">
             {ground
               ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : "the ground away"}</b>. Drag on the map; pick an item above to place items again.</>
-              : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other, and PRO designs are not handled yet.</>}
+              : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other. PRO designs can't be placed on the ground in game, so they aren't offered.</>}
           </div>
         </div>
         <div className="divider" />
@@ -989,6 +990,10 @@ export default function MapEditor() {
     const b = selBuilding !== null ? buildings![selBuilding] : null;
     const upd = (patch: Partial<Building>) => {
       if (selBuilding === null) return;
+      if (patch.angle !== undefined && patch.angle !== buildings![selBuilding].angle) {
+        toast("error", "Buildings can't be rotated", "The game ignores an angle change on a placed structure. Only bridges and inclines carry a real angle.");
+        return;
+      }
       const next = buildings!.slice(); next[selBuilding] = { ...next[selBuilding], ...patch };
       setBuildings(next); api.setBuildings(next).then(touch).catch((e) => toast("error", "Could not save buildings", String(e)));
     };

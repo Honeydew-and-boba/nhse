@@ -90,6 +90,9 @@ non-zero angle and it has no door data.
 - Fixed kinds (Resident Services, airport, tent, bridge, incline, Redd's trawler, studio, hotel)
   show a red warning. Dragging is not blocked because this is a save editor; the numeric X/Y fields
   and "Pick position" work for every building.
+- Buildings cannot be rotated. Changing a selected building's Angle (advanced mode) raises an error
+  and is not saved, and `set_buildings` rejects it too (`building.rs::angle_ok`). Bridges and
+  inclines are exempt because the game stores their real angle, which follows the terrain.
 - Warnings are static text. There is no live scan for rivers, trees or overlapping plots.
 
 ## Ground designs (placed custom patterns)
@@ -101,10 +104,10 @@ normal design's 32×32 thumbnail (from `design/normal/<index>`) into its `2s × 
 with normal alpha so transparent pixels reveal the ground. The bottom-left readout appends
 `Ground design #<index>`; the View menu has a **Ground designs** toggle.
 
-The encoding of a **PRO** design placed on the ground is not established (it is not known whether
-the value offsets by `pattern_count`, uses a flag bit, or something else). Values at or above
-`pattern_count` therefore keep the old magenta marker and show as `0x…` in the readout, instead of
-indexing the wrong list. Place a PRO design in-game, save, and diff `MyDesignMap` to measure it.
+PRO designs cannot be placed on the ground in game; they are only used as mannequins or wall
+paintings, so `MyDesignMap` never holds one. Values at or above `pattern_count` are therefore an
+unknown value of some other kind; they keep the magenta marker and show as
+`Unknown ground value 0x…` in the readout instead of indexing the wrong list.
 
 Preview notes:
 
@@ -141,8 +144,8 @@ middle 7×6 acres. Designs use `(x / 2, y / 2)`, because `MyDesignMap` spans the
 (144×96 on 3.0). Painting outside the terrain data therefore does nothing for paths; the pixel
 preview shows that.
 
-PRO designs are not offered yet (same unknown encoding as above). Normal design slots from
-`api.designs("normal")` are filtered to non-empty ones.
+Only normal designs are offered, because the game cannot place a PRO design on the ground. Normal
+design slots from `api.designs("normal")` are filtered to non-empty ones.
 
 ## Verified examples
 
@@ -168,19 +171,11 @@ their neighbours, normal designs paint straight onto `MyDesignMap`, both replace
 each stroke is one undo entry.
 
 Next: test the painted paths and designs in-game, verify the remaining building sizes/positions,
-fill in door data for the fixed structures, and check dragging on buildings with a non-zero
-`angle`.
+fill in door data for the fixed structures, and check dragging on the bridge (the one building with
+a non-zero `angle`).
 
 ## Remaining goals (not started — handoff notes)
 
-1. **PRO ground-design previews and painting.** Normal designs are drawn and painted, but the
-   `MyDesignMap` encoding for placed PRO designs is still unknown, so those keep the magenta
-   marker and are absent from the ground palette. Measure it with a save that has a placed PRO
-   design, then decode it the same way.
-2. **Favourites section in the map editor.** Add a small palette of favourite patterns/paths for
-   quick access while painting. It should reuse the existing item/pattern picker and persist per
-   save or app settings (check `settings` in `src/lib/store.tsx`). The ground palette is a good
-   place to hang it. No implementation started.
-3. **Terrain/water/cliff painting.** Ground painting covers the road layer and custom designs; it
+1. **Terrain/water/cliff painting.** Ground painting covers the road layer and custom designs; it
    does not change `TerrainTile.model` (rivers, cliffs, grass elevation). The Files tab still
    imports and exports whole terrain dumps. No implementation started.

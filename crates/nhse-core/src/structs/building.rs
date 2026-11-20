@@ -95,6 +95,15 @@ pub fn movable(kind: u16) -> bool {
     matches!(kind, 1..=19 | 21 | 24 | 25)
 }
 
+impl Building {
+    /// Whether `next` may replace this slot. The game does not rotate placed structures, so an
+    /// angle change is rejected unless the slot becomes a different kind or the structure is a
+    /// bridge/incline, whose angle is real terrain data.
+    pub fn angle_ok(&self, next: &Building) -> bool {
+        self.angle == next.angle || self.kind != next.kind || matches!(self.kind, 26 | 27)
+    }
+}
+
 /// The part of a structure that is actually built, as rectangles in item tiles relative to the
 /// centre. An empty slice means "the whole plot from [`footprint`]", which is the case for every
 /// kind not measured yet. Free ground inside the plot but outside these rectangles stays clear.
@@ -146,6 +155,44 @@ mod tests {
         assert_eq!(footprint(24), (5, 4)); // Able Sisters
         assert_eq!(footprint(25), (4, 4)); // campsite
         assert_eq!(footprint(999), (2, 2)); // unknown kind
+    }
+
+    #[test]
+    fn angle_changes_are_rejected_except_for_bridges_and_inclines() {
+        let house = Building {
+            kind: 1,
+            angle: 0,
+            ..Default::default()
+        };
+        assert!(house.angle_ok(&Building {
+            kind: 1,
+            angle: 0,
+            ..Default::default()
+        }));
+        assert!(!house.angle_ok(&Building {
+            kind: 1,
+            angle: 1,
+            ..Default::default()
+        }));
+        // A different kind in the slot is not a rotation.
+        assert!(house.angle_ok(&Building {
+            kind: 9,
+            angle: 3,
+            ..Default::default()
+        }));
+        // Bridges and inclines store the angle the game derives from the terrain.
+        for kind in [26, 27] {
+            let b = Building {
+                kind,
+                angle: 1,
+                ..Default::default()
+            };
+            assert!(b.angle_ok(&Building {
+                kind,
+                angle: 2,
+                ..Default::default()
+            }));
+        }
     }
 
     #[test]
