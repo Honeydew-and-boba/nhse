@@ -109,29 +109,32 @@ Not done yet on Windows:
 - Nothing is published for Windows: `release.yml` still builds macOS + `nhse.nro` only. Adding a
   Windows job there needs care so two jobs don't race to create the same release.
 
-## Goals for this fork (status — do not assume the rest are done)
+## Goals and status (do not assume the rest are done)
 
-- **Map editor QoL** (in progress on `map-editor-qol`): footprints, doors, drag handles and
-  fixed-building warnings are in. Doors draw as a translucent plate with a one-terrain-tile glyph and
-  a four-way move badge; only the first part of a multi-part door gets the glyph. Villager houses
-  draw their built body (`building.rs::body`) so the open front row stays clear. Next: verify
-  in-game, fill in the remaining building sizes/doors, and test rotated buildings.
+- **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
+  draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
+  first part of a multi-part door gets the glyph. Villager houses draw their built body
+  (`building.rs::body`) so the open front row stays clear. Next: verify in-game, fill in the
+  remaining building sizes/doors, and test rotated buildings.
 - **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
   their normal 32×32 thumbnails, with a hover index and a View toggle; PRO values still show as
   markers because their value encoding is unmeasured. Notes in `docs/map-editor.md`.
+- **Map editor: path painting**: the Item panel's Ground section paints the eight default path
+  families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
+  save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
+  PRO designs are still skipped. Next: test painted paths and designs in-game. Notes in
+  `docs/map-editor.md`.
 - **Map editor: favourites** (not started): a quick-access palette of favourite patterns and paths.
   Notes in `docs/map-editor.md`.
-- **Map editor: path painting** (not started): brushes for terrain/road families and placed custom
-  designs; today the editor only inspects terrain and imports whole dumps. Notes in
-  `docs/map-editor.md`.
+- **Map editor: terrain/water/cliff painting** (not started): only the road layer and ground
+  designs are painted; `TerrainTile.model` (rivers, cliffs, elevation) is still import/export only.
+  Notes in `docs/map-editor.md`.
 
-Branches (2026-11-19): local `master` tracks `upstream/master` at `f85aee6` (the `windows-build`
-merge); `windows-build` is a stale local branch. `design-pattern-qol` is 4 commits ahead of
-`master`, local only (the old `origin` branch is gone), and carries the `.acnh` import, usage-flag
-fix and editor QoL work; details in `docs/designs.md`. `map-editor-qol` is branched from
-`design-pattern-qol` and adds the footprint, door, drag, warning and ground-design work in
-`docs/map-editor.md`. `origin` (`Honeydew-and-boba/nhse`) currently has only `master`; neither QoL
-branch has been pushed.
+Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-pattern-qol` (PR #1:
+`.acnh` imports, usage-flag fix, design editor QoL). `windows-build` and `design-pattern-qol` were
+merged and deleted on `origin`; both still exist locally. Local `master` tracks `upstream/master` at
+`f85aee6` and trails `origin/master`. `map-editor-qol` carries the footprint, door, drag, warning,
+ground-design and path-painting work described in `docs/map-editor.md`.
 
-Remotes: `origin` is the fork `Honeydew-and-boba/nhse`; `upstream` is `sh00kapic/nhse`.
+Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.
