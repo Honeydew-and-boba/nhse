@@ -94,7 +94,7 @@ impl View for Home {
                 }
                 10 => Row::section("Open a save"),
                 1 => Row::new("Animal Crossing on this console").help(
-                    "Edit the game's console-wide island save, edit, then press + to save.\n\nClose Animal Crossing before you start (press HOME, then X on the game). The save is backed up to the SD card when it is opened, and the game's save only changes when you save.",
+                    "Edit the console-wide island save, then press + to save.\n\nClose Animal Crossing before you start (press HOME, then X on the game). The save is backed up to the SD card when it is opened, and the game's save only changes when you save.",
                 ),
                 2 => Row::new("A save on the SD card").help(
                     "Browse the SD card and press Y inside the folder containing main.dat. You can also open main.dat or a ZIP directly.",
@@ -411,7 +411,11 @@ impl View for Browser {
         if button != btn::Y || self.error.is_some() {
             return None;
         }
-        if !self.entries.iter().any(|(_, kind)| *kind == EntryKind::MainDat) {
+        if !self
+            .entries
+            .iter()
+            .any(|(_, kind)| *kind == EntryKind::MainDat)
+        {
             return Some(Nav::message(
                 "Choose a save folder",
                 "This folder has no main.dat. Open the folder that contains your Animal Crossing save.",
@@ -545,11 +549,11 @@ impl View for BackupMenu {
 
     fn activate(&mut self, cx: &mut Cx, row: usize) -> Nav {
         match row {
-            0 => Nav::Push(users_screen(cx, UserPurpose::Restore)),
-            1 if cx.dirty() => Nav::message(
+            0 | 1 if cx.dirty() => Nav::message(
                 "Save or discard first",
-                "The open save has unsaved changes. Save them, or discard them in the editor, then open the backup.",
+                "The open save has unsaved changes. Save them, or discard them in the editor, then use the backup.",
             ),
+            0 => Nav::Push(users_screen(cx, UserPurpose::Restore)),
             1 => Browser::open(self.b.path.clone()),
             2 => Nav::confirm_danger(
                 "Delete this backup?",
@@ -585,6 +589,13 @@ impl View for BackupMenu {
                 };
                 let b = self.b.clone();
                 Nav::busy("Restoring…", move |cx| {
+                    if cx
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| matches!(s.origin, session::Origin::Game(_)))
+                    {
+                        cx.session = None;
+                    }
                     match session::restore_backup(cx.platform.as_mut(), &b, &user) {
                         Ok(msg) => {
                             cx.toast(msg);

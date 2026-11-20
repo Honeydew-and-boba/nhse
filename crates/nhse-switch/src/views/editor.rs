@@ -235,7 +235,10 @@ impl View for Editor {
         match r {
             Reply::Confirmed(T_CLOSE) => Self::close(cx),
             Reply::Confirmed(T_REVERT) => {
-                let res = cx.session.as_mut().map(session::revert);
+                let res = cx
+                    .session
+                    .as_mut()
+                    .map(|s| session::revert(cx.platform.as_mut(), s));
                 match res {
                     Some(Err(e)) => Nav::message("The save could not be reloaded", e),
                     _ => {

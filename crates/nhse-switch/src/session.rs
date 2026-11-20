@@ -6,9 +6,7 @@
 //! transaction: if anything fails, nothing is committed and the game's save stays as it was.
 use crate::fmt;
 use crate::platform::{Platform, UserAccount};
-use nhse_core::save::provider::{
-    create_dir_all, path_exists, path_is_file, path_len, read_file, read_text,
-};
+use nhse_core::save::provider::{create_dir_all, path_exists, path_len, read_file, read_text};
 use nhse_core::save::SaveSource;
 use nhse_core::HorizonSave;
 use std::fs;
@@ -128,7 +126,7 @@ pub fn list_backups(p: &dyn Platform) -> Vec<BackupInfo> {
         return out;
     };
     for (name, directory) in entries {
-        if !directory {
+        if !directory || name.ends_with(".part") {
             continue;
         }
         let path = root.join(&name);
@@ -172,17 +170,26 @@ fn dir_size(platform: &dyn Platform, path: &Path) -> u64 {
         .sum()
 }
 
-/// Backs up the save files of `src`. Returns `None` when the newest backup is identical.
+/// Backs up the save files of `src`. Returns `None` when an independent backup has identical contents.
 pub fn create_backup(
     p: &dyn Platform,
     src: &SaveSource,
     town: &str,
     source_label: &str,
+    protected: &Path,
 ) -> Result<Option<PathBuf>, String> {
     let fp = fingerprint(src)?;
     let existing = list_backups(p);
-    if existing.iter().any(|b| b.fingerprint == fp) {
-        return Ok(None);
+    for b in &existing {
+        if b.path != src.location()
+            && b.fingerprint == fp
+            && fingerprint(&SaveSource::Folder(b.path.clone()))
+                .ok()
+                .as_ref()
+                == Some(&fp)
+        {
+            return Ok(None);
+        }
     }
     let now = p.local_time();
     let safe = nhse_core::util::strings::clean_file_name(town);
@@ -220,7 +227,13 @@ pub fn create_backup(
         return Err(format!("The backup failed: {e}"));
     }
     // keep the newest backups
-    for old in list_backups(p).into_iter().skip(KEEP_BACKUPS) {
+    let keep_old =
+        KEEP_BACKUPS.saturating_sub(1 + usize::from(existing.iter().any(|b| b.path == protected)));
+    for old in existing
+        .iter()
+        .filter(|b| b.path != protected)
+        .skip(keep_old)
+    {
         let _ = p.clear_backup_dir(&old.path);
     }
     Ok(Some(dir))
@@ -238,6 +251,7 @@ pub fn open_sd(p: &dyn Platform, path: &Path) -> Result<Session, String> {
         &save.source,
         &save.town_name(),
         &path.display().to_string(),
+        save.source.location(),
     )?;
     Ok(Session {
         written: content_hashes(&save),
@@ -295,6 +309,7 @@ pub fn open_game(p: &mut dyn Platform, user: &UserAccount) -> Result<Session, St
         &save.source,
         &save.town_name(),
         &format!("Game save of {}", user.name),
+        &work,
     )?;
     Ok(Session {
         written: content_hashes(&save),
@@ -359,7 +374,11 @@ pub fn save(p: &mut dyn Platform, s: &mut Session) -> Result<String, String> {
 }
 
 /// Re-reads the save, discarding unsaved edits.
-pub fn revert(s: &mut Session) -> Result<(), String> {
+pub fn revert(p: &mut dyn Platform, s: &mut Session) -> Result<(), String> {
+    if let Origin::Game(user) = &s.origin {
+        *s = open_game(p, user)?;
+        return Ok(());
+    }
     let path = s.save.source.location().to_path_buf();
     s.save = HorizonSave::open(&path).map_err(err)?;
     s.written = content_hashes(&s.save);
@@ -385,7 +404,7 @@ pub fn restore_backup(
     let copied = copy_tree(p, &root, &work);
     p.unmount_game_save();
     copied.map_err(|e| format!("Could not back up the current game save: {e}"))?;
-    if path_is_file(&work.join("main.dat")) {
+    if !p.game_entries(&work)?.is_empty() {
         let cur = HorizonSave::open(&work)
             .map_err(|e| format!("Current game save could not be read; restore stopped: {e}"))?;
         if cur.source.save_files().map_err(err)? != files {
@@ -396,6 +415,7 @@ pub fn restore_backup(
             &cur.source,
             &cur.town_name(),
             &format!("Game save of {} (before a restore)", user.name),
+            &b.path,
         )?;
     }
     write_game_files(p, user, &b.path, &files)?;

@@ -317,7 +317,7 @@ pub const PLAYER_FILES: [&str; 5] = [
 
 fn is_player_dir(name: &str) -> bool {
     name.len() > 8
-        && name[..8].eq_ignore_ascii_case("villager")
+        && name.as_bytes()[..8].eq_ignore_ascii_case(b"villager")
         && name[8..].chars().all(|c| c.is_ascii_digit())
 }
 
@@ -364,6 +364,12 @@ mod tests {
         let data = (0..131_073).map(|i| i as u8).collect::<Vec<_>>();
         std::fs::write(&path, &data).unwrap();
         assert_eq!(super::read_file(&path).unwrap(), data);
+    }
+
+    #[test]
+    fn skips_unrelated_unicode_folders() {
+        assert!(!super::is_player_dir("1234567島"));
+        assert!(super::is_player_dir("Villager0"));
     }
 
     #[test]

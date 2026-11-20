@@ -224,6 +224,21 @@ impl View for FieldItems {
     }
 }
 
+fn read_design(path: &str, limit: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Design file exceeds the size limit.",
+        ));
+    }
+    Ok(bytes)
+}
+
 pub struct Designs;
 const KINDS: [DesignKind; 4] = [
     DesignKind::Normal,
@@ -355,16 +370,14 @@ impl View for DesignEdit {
                 return Nav::Stay;
             };
             if row == 9 {
-                let bytes = match nhse_core::save::provider::read_file(std::path::Path::new(&path))
-                {
+                let bytes = match read_design(&path, 1024 * 1024) {
                     Ok(b) => b,
                     Err(e) => {
                         cx.toast_error(e.to_string());
                         return Nav::Stay;
                     }
                 };
-                if bytes.len() > 1024 * 1024
-                    || bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n")
+                if bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n")
                     || bytes.get(16..24) != Some(&[0, 0, 0, 32, 0, 0, 0, 32])
                 {
                     cx.toast_error("Choose a 32 x 32 PNG smaller than 1 MB.");
@@ -457,7 +470,7 @@ impl View for DesignEdit {
             7 | 8 => {
                 if let Some(path) = cx.ask_text("Design file", "Full SD card path", "", 255) {
                     if row == 7 {
-                        match nhse_core::save::provider::read_file(std::path::Path::new(&path)) {
+                        match read_design(&path, d.len()) {
                             Ok(bytes) if bytes.len() == d.len() => d = bytes,
                             Ok(_) => {
                                 cx.toast_error("The design file has the wrong size for this slot.");

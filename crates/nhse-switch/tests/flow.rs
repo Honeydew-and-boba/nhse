@@ -34,7 +34,13 @@ fn read_dir_bytes(p: &Path) -> Vec<(String, Vec<u8>)> {
             if e.path().is_dir() {
                 stack.push(e.path());
             } else {
-                let rel = e.path().strip_prefix(p).unwrap().display().to_string().replace('\\', "/");
+                let rel = e
+                    .path()
+                    .strip_prefix(p)
+                    .unwrap()
+                    .display()
+                    .to_string()
+                    .replace('\\', "/");
                 out.push((rel, std::fs::read(e.path()).unwrap()));
             }
         }
@@ -129,6 +135,19 @@ fn game_save_edit_is_written_and_committed() {
 }
 
 #[test]
+fn damaged_backup_is_not_reused() {
+    use nhse_switch::session::open_game;
+    let tmp = setup();
+    let mut p = HostPlatform::new(tmp.path(), &[USER], vec![], tmp.path());
+    let user = p.users().unwrap().remove(0);
+    let backup = open_game(&mut p, &user).unwrap().backup.unwrap();
+    std::fs::write(backup.join("main.dat"), b"damaged").unwrap();
+    let replacement = open_game(&mut p, &user).unwrap().backup.unwrap();
+    assert_ne!(replacement, backup);
+    assert!(HorizonSave::open(&replacement).is_ok());
+}
+
+#[test]
 fn only_changed_files_are_written_to_the_game() {
     let tmp = setup();
     let root = tmp.path();
@@ -157,11 +176,14 @@ fn failed_commit_leaves_the_game_save_untouched() {
     let before = read_dir_bytes(&HostPlatform::game_dir(root, USER));
     let mut script = open_game_and_set_wallet();
     script.push(Press(PLUS));
-    let app = run(root, script, &["777"], true);
+    let mut app = run(root, script, &["777"], true);
     assert!(
         app.cx.session.as_ref().unwrap().dirty,
         "still unsaved after the failure"
     );
+    let session = app.cx.session.as_mut().unwrap();
+    nhse_switch::session::revert(app.cx.platform.as_mut(), session).unwrap();
+    assert_ne!(session.save.player_profile(0).unwrap().wallet, 777);
     assert_eq!(before, read_dir_bytes(&HostPlatform::game_dir(root, USER)));
 }
 
@@ -172,9 +194,14 @@ fn sd_save_bulk_edits_are_saved() {
     let d = |n| std::iter::repeat_n(Press(DOWN), n);
     // Home → SD card → dumps/ → island/ → select current folder → resident → recipes
     let mut script = vec![
-        Press(DOWN), Press(A), Press(A), // Browse to dumps/.
-        Press(Y), Press(A),             // Reject the parent and dismiss the message.
-        Press(A), Press(Y), Press(A),   // Enter island/, select it, and open the resident.
+        Press(DOWN),
+        Press(A),
+        Press(A), // Browse to dumps/.
+        Press(Y),
+        Press(A), // Reject the parent and dismiss the message.
+        Press(A),
+        Press(Y),
+        Press(A), // Enter island/, select it, and open the resident.
     ];
     script.extend(d(8)); // Wallet … Poki, Pockets, Storage, Recipes
     script.extend([Press(A), Press(A), Press(PLUS)]);
@@ -227,11 +254,19 @@ fn backup_restores_the_game_save() {
     let edited = HorizonSave::open(&HostPlatform::game_dir(root, USER)).unwrap();
     assert_eq!(edited.player_profile(0).unwrap().wallet, 4242);
 
+    // Make the original the oldest of 30 so the pre-restore backup triggers retention.
+    let backup_root = root.join("sd/switch/nhse/backups");
+    for i in 1..nhse_switch::session::KEEP_BACKUPS {
+        let dir = backup_root.join(format!("history{i}"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("nhse-backup.txt"), "time=2000000000\n").unwrap();
+    }
     // Home → Backups → the backup of the original → Restore → USER → confirm
     let script = vec![
         Press(DOWN),
         Press(DOWN),
         Press(A),
+        Press(ZR),
         Press(A),
         Press(A),
         Press(A),
@@ -244,7 +279,7 @@ fn backup_restores_the_game_save() {
     let n = std::fs::read_dir(root.join("sd/switch/nhse/backups"))
         .unwrap()
         .count();
-    assert_eq!(n, 2);
+    assert_eq!(n, nhse_switch::session::KEEP_BACKUPS);
 }
 
 #[test]

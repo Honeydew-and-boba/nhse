@@ -99,6 +99,7 @@ fn main() {
         shot("14-browser"),
         Press(A),
         Press(A),
+        Press(Y),
         shot("15-sd-editor"),
     ]);
     script.extend([

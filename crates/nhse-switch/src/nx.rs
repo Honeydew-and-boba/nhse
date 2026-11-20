@@ -128,8 +128,9 @@ impl Platform for Nx {
             if n <= data.len() {
                 break n;
             }
-            data.try_reserve_exact(n - data.len())
-                .map_err(|_| format!("{}: not enough memory to list this folder.", path.display()))?;
+            data.try_reserve_exact(n - data.len()).map_err(|_| {
+                format!("{}: not enough memory to list this folder.", path.display())
+            })?;
             data.resize(n, 0);
         };
         let mut entries = Vec::new();

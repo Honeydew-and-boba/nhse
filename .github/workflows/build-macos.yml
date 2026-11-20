@@ -67,7 +67,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish rolling pre-release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && (github.ref_name == 'master' || github.ref_name == 'rust-tauri-rewrite')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: nightly-${{ github.ref_name == 'master' && 'master' || 'rust' }}
