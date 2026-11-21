@@ -145,10 +145,15 @@ two jobs race to create the release. It has not been run yet.
   1×1 pond inside a cross of falls), and the unmeasured `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
   **Back up the save before terrain work.**
 
-Branches (2026-11-22): the fork holds `master` only. `origin/master` is `da1ffb0`, the merge of PR #3
+Branches (2026-11-22): the fork holds `master` only. `origin/master` was `da1ffb0`, the merge of PR #3
 (`map-editor-qol`: footprints, doors, drag, warnings, ground designs, path painting, terrain
 painting). Local `master` tracks `origin/master`; `windows-build`, `design-pattern-qol` and
 `map-editor-qol` were merged and deleted locally and on `origin`.
+
+On 2026-11-21 the waterfall hot fix (three commits: recessed falls and the measured model table, the
+`Fall100`/`River4C` follow-up, the verification docs) was committed and pushed straight to
+`master` on `origin` with no PR. `save/` in the working tree is that day's dump, acre G6 being the
+waterfall test acre.
 
 Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.
