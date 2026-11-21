@@ -78,7 +78,12 @@ icon over its two plates.
 The measurements came from the in-game map using the editor's bottom-left readout (layer Y + 32 =
 absolute Y). Other kinds have no measured door and get a neutral 2×2 centre handle instead, so they
 can still be selected and dragged. Door drawing ignores `angle`; only the bridge currently has a
-non-zero angle and it has no door data.
+non-zero angle and it has no door data, so it drags by its neutral centre handle.
+
+Dragging does not consult `movable_buildings`: a fixed structure (bridge, incline, airport, tent,
+Resident Services, Redd's trawler, the studio, the hotel) still moves when dragged, and the move is
+written on mouse up. The only warning is the danger Callout in the building panel, which replaces the
+X/Y inputs for those kinds. Leave them where the game put them.
 
 ## Drawing and interaction
 
@@ -153,9 +158,11 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 
 ## Painting rivers, cliffs and waterfalls
 
-> **In-game status (2026-11-20).** Cliffs, heights 0–3, rivers and sharp/round cliff corners are
-> verified in game. Water mechanics are the remaining rough edge: waterfalls and consecutive
-> (cascade) falls are still being stabilised. **Back up the save before terrain work.**
+> **In-game status (2026-11-22).** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded
+> cliff *and* river corners, automatic waterfalls (including the water-behind source rule),
+> consecutive (cascade) falls, painted paths and ground designs, and moving buildings. Still
+> unverified: the river junction models the sample save never used (see Measured river table). **Back
+> up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
@@ -253,13 +260,15 @@ tile **behind it** (opposite the drop) is river at the same height, or water one
 above in a cascade). Without a source the game leaves the back of the fall open and you see through
 it, so the tile stays a river and the toast counts it (`N water edges need water behind them`).
 A drop of more than one level is refused (add a one-tile terrace), and water that drops onto land
-is left as a river and counted in the warning toast.
+is left as a river and counted in the warning toast. Automatic fall painting and the source rule
+were confirmed in game (2026-11-22).
 
 Consecutive falls (one fall landing on the next) are generated on every level, but with the basic
 `Fall200`/`Fall300`/`Fall400` models. The measured cascade variants are in the model list:
 `Fall204`/`Fall304`/`Fall408` for a closed back on top, and the `Fall2xx`/`Fall3xx` lower-strip
-models. Those lower variants were only measured for east- and west-dropping falls, so for a
-north/south cascade check it in game and stamp the models by hand if the basic ones look wrong.
+models. Generated cascades were checked in game (2026-11-22) and look right with the basic models;
+the lower variants were only measured for east- and west-dropping falls, so they are optional polish
+stamped by hand, not a fix.
 
 The sample save's two-level gorge uses the other measured cascade models. All of them are in the
 model list and are treated as hand-set, so later water strokes leave them alone:
@@ -279,9 +288,10 @@ model list and are treated as hand-set, so later water strokes leave them alone:
 
 The lower-strip models encode the absolute direction as well as the strip position (208 and 202 are
 the same slot for opposite drops), so the labels name the measured orientation rather than a
-rule. Those placements come from one gorge: corner falls and cascades of three or more levels are
-not measured, and automatic cascade generation is not implemented. Place those tiles by hand with
-the model list.
+rule. Those placements come from one gorge. The game has no corner-fall models, so a fall on a
+corner is left as a river and counted in the warning toast, and a fall that would drop more than one
+level is refused (add a one-tile terrace). Cascades of three or more levels and the variants the
+gorge did not show are not measured: place those tiles by hand with the model list.
 
 ### Rules that keep a save loadable
 
@@ -319,18 +329,18 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
 
 - Painting water within one tile of an existing multi-level waterfall fails the >1-level check
   (nothing is written). Paint away from it, or fix the tiles by hand.
-- Re-tiling the ring can replace a hand-picked `River3C` with the default `River3B` when the water
-  next to it changes. Use **Fix one tile** to put it back. Hand-set fall models (anything other than
-  `Fall200`/`Fall300`/`Fall400`) and `Cliff3C` corners are kept.
+- A tile that is already a river bend keeps its rounded/sharp style when a later stroke re-tiles the
+  ring, so a hand-picked `River3C` survives. Hand-set fall models (anything other than
+  `Fall200`/`Fall300`/`Fall400`) and `Cliff3C` corners are kept the same way. Use **Fix one tile** to
+  change a bend or a corner by hand.
 - A saddle (two low diagonals, no low side) or a strip with no connected same-height side is still
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
 - The generator writes the rounded `Cliff3B` style for every 2-adjacent-low corner unless the
-  **Corners** choice is Sharp (`Cliff3C`). Existing corners keep their style; use **Fix one tile**
-  to change one by hand.
-- In game (2026-11-20): single raises, multi-tile cliffs, heights 2–3, rivers, sharp/round cliff
-  corners and the tree/building warning all looked right. Water mechanics are the remaining rough
-  edge: a fall needs water at the same height (or a fall above) behind it, and consecutive falls are
-  generated with the basic models, so check every cascade in game.
+  **Corners** choice is Sharp (`Cliff3C`).
+- In game (2026-11-22): single raises, multi-tile cliffs, heights 2–3, rivers, sharp and rounded
+  cliff and river corners, automatic waterfalls and consecutive falls, painted paths and ground
+  designs, moved buildings and the tree/building warning all looked right. Moving a fixed structure
+  is still possible (see Doors and move handles).
 
 ## Verified examples
 
@@ -347,10 +357,10 @@ design thumbnails with transparency. Doors and drag were added from in-game meas
 painting is checked against an emulator shape sheet: a 1×1 raise stays `Cliff0A` at elevations
 1–3, a 2×1 stays `Cliff1A`, a 3×1 ridge stays `Cliff2A`, a 3×3 stays `3B`/`5B`/`Base`, and the only
 re-derive differences are angular `Cliff2C`/`Cliff3C` corners that the generator draws as rounded
-`3B`. In game (2026-11-20) single raises, multi-tile cliffs, heights 2–3, rivers and sharp/round
-cliff corners all matched; the tree/building warning was acceptable. Water mechanics are the
-remaining rough edge: waterfalls need a source behind them and cascades use the basic models, so back
-up the save before terrain work. No save data layout changed.
+`3B`. In game (2026-11-22) single raises, multi-tile cliffs, heights 2–3, rivers, sharp/round cliff
+and river corners, automatic waterfalls with their source rule, consecutive falls, painted paths and
+ground designs, moved buildings and the tree/building warning all matched. No save data layout
+changed.
 
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house
@@ -371,15 +381,14 @@ cliff corners (existing corners keep their style) and the semi-manual waterfall 
 now uses plain-language labels and carries the 13 fall models the save uses, and any hand-set fall
 model survives later water strokes.
 
-Next: test the painted paths and designs in-game, verify the waterfall source fix and a sharp river
-bend in game, verify the remaining building sizes/positions, fill in door data for the fixed
-structures, and check dragging on the bridge (the one building with a non-zero `angle`).
+Next: verify the remaining building sizes/positions, fill in door data for the fixed structures, and
+measure the river junction models.
 
 ## Remaining goals (not started — handoff notes)
 
-1. **Terrain painting follow-ups.** Rivers, cliffs, sharp/round corners on both, straight one-level
-   waterfalls and semi-manual fall models are in (see above). Still open: in-game verification of
-   the fall source rule and `River3C`, the unmeasured river nub/junction shapes (`4A`, `4B`, `5A`,
-   `6A`, `6B`, `4C`), automatic corner and multi-level waterfalls, and the
-   `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants. The Files tab still imports and
-   exports whole terrain dumps.
+1. **Terrain painting follow-ups.** Rivers, cliffs, sharp/rounded corners on both, straight one-level
+   waterfalls and semi-manual fall models are in and verified in game (see above). Still open: the
+   unmeasured river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`), which the generator
+   fills as open water, and the `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants.
+   Corner falls do not exist in the game; a fall that drops more than one level is refused unless a
+   terrace buffers it.

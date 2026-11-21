@@ -104,21 +104,22 @@ Windows quirks worth knowing:
   folder rather than opening its contents; switching to `openPath` would need `opener:allow-open-path`
   in `src-tauri/capabilities/default.json`.
 
-Not done yet on Windows:
-
-- Nothing is published for Windows: `release.yml` still builds macOS + `nhse.nro` only. Adding a
-  Windows job there needs care so two jobs don't race to create the same release.
+Release: `release.yml` has a `windows` job that builds the NSIS installer (unsigned, so SmartScreen
+warns on first run). Its output joins the macOS and `nhse.nro` files in the one `release` job, so no
+two jobs race to create the release. It has not been run yet.
 
 ## Goals and status (do not assume the rest are done)
 
-- **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
+- **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in and
+  verified in game (2026-11-22), including moving buildings. Doors
   draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
   first part of a multi-part door gets the glyph. Villager houses and Able Sisters draw their
   measured built body (`building.rs::body`), leaving their open front ground clear. Buildings cannot
   be rotated: the Angle field and `set_buildings` reject a change (`building.rs::angle_ok`), except
   for bridges and inclines whose angle is real terrain data. The Item panel runs Brush → Selected
-  tile → Ground. Next: verify in-game, fill in the remaining building sizes/doors, and check
-  dragging the bridge.
+  tile → Ground. **Fixed structures can still be dragged** (the bridge included, by its neutral
+  centre handle): dragging ignores `movable_buildings`, and the danger Callout in the building panel
+  is the only warning. Next: fill in the remaining building sizes/doors.
 - **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
   their normal 32×32 thumbnails, with a hover index and a View toggle. PRO designs cannot be placed
   on the ground in game (mannequin/painting only), so values at or above `pattern_count` are an
@@ -126,16 +127,16 @@ Not done yet on Windows:
 - **Map editor: path painting**: the Item panel's Ground section paints the eight default path
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
   save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
-  Next: test painted paths and designs in-game. Notes in `docs/map-editor.md`.
+  Painted paths and designs verified in game (2026-11-22). Notes in `docs/map-editor.md`.
 - **Map editor: terrain painting**: in — rivers (8-way banks, Rounded/Sharp bends), raise/lower with
   generated faces and rounded/sharp corners, straight one-level and consecutive falls, the 0–3 limit,
   the two-level-step refusal, the tree/building warning and semi-manual fall models; see
-  `docs/map-editor.md`. Verified in game (2026-11-20): cliffs, heights, rivers, sharp/round cliff
-  corners and the tree/building warning. **Water mechanics are the remaining rough edge: waterfalls
-  and cascades are still being stabilised (`River3C` also unverified). Back up the save before terrain
-  work.** Open: in-game verification of the fall source rule, cascades and `River3C`; the unmeasured
-  river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); the unmeasured
-  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
+  `docs/map-editor.md`. Verified in game (2026-11-22): cliffs, heights, rivers, sharp/round cliff and
+  river corners, automatic waterfalls with the water-behind source rule, consecutive falls and the
+  tree/building warning. Corner falls do not exist in the game, and a fall dropping more than one
+  level is refused unless a terrace buffers it. Open: the unmeasured river nub/junction shapes
+  (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`), which the generator fills as open water, and the unmeasured
+  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants. **Back up the save before terrain work.**
 
 Branches (2026-11-22): the fork holds `master` only. `origin/master` is `da1ffb0`, the merge of PR #3
 (`map-editor-qol`: footprints, doors, drag, warnings, ground designs, path painting, terrain
