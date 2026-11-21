@@ -137,11 +137,10 @@ Not done yet on Windows:
   river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); the unmeasured
   `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
 
-Branches (2026-11-21): `origin/master` is `719e792`, the merge of PR #2 (`map-editor-qol`:
-footprints, doors, drag, warnings, ground designs, path painting). `map-editor-qol` adds the terrain
-painting (rivers, cliffs, corners, falls) on top of that and is merged as the next PR.
-`windows-build` and `design-pattern-qol` were merged and deleted on `origin`; both still exist
-locally. Local `master` tracks `upstream/master` at `f85aee6` and trails `origin/master`.
+Branches (2026-11-22): the fork holds `master` only. `origin/master` is `da1ffb0`, the merge of PR #3
+(`map-editor-qol`: footprints, doors, drag, warnings, ground designs, path painting, terrain
+painting). Local `master` tracks `origin/master`; `windows-build`, `design-pattern-qol` and
+`map-editor-qol` were merged and deleted locally and on `origin`.
 
 Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.
