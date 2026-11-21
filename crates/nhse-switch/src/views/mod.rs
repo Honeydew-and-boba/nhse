@@ -1,4 +1,5 @@
 //! Screens that work without an open save: home, the SD card browser, users and backups.
+pub mod advanced;
 pub mod editor;
 pub mod items;
 
@@ -93,10 +94,10 @@ impl View for Home {
                 }
                 10 => Row::section("Open a save"),
                 1 => Row::new("Animal Crossing on this console").help(
-                    "Edit the game's own save. Pick the user who plays, edit, then press + to save.\n\nClose Animal Crossing before you start (press HOME, then X on the game). The save is backed up to the SD card when it is opened, and the game's save only changes when you save.",
+                    "Edit the console-wide island save, then press + to save.\n\nClose Animal Crossing before you start (press HOME, then X on the game). The save is backed up to the SD card when it is opened, and the game's save only changes when you save.",
                 ),
                 2 => Row::new("A save on the SD card").help(
-                    "Open a save folder (the one with main.dat in it), main.dat itself, or a .zip of the save, for example a dump made with a save manager.",
+                    "Browse the SD card and press Y inside the folder containing main.dat. You can also open main.dat or a ZIP directly.",
                 ),
                 11 => Row::section("More"),
                 3 => {
@@ -134,7 +135,7 @@ impl View for Home {
                 "The open save has changes that are not saved. Open another save anyway?",
                 T_DISCARD_SD,
             ),
-            Some(2) => Nav::Push(Box::new(Browser::new(cx.platform.sd_root()))),
+            Some(2) => Nav::Push(Box::new(Browser::new(cx.platform.as_ref(), cx.platform.sd_root()))),
             Some(3) => Nav::Push(Box::new(Backups)),
             Some(5) => {
                 let next = cx.theme_choice.next();
@@ -193,7 +194,10 @@ impl View for Home {
             }
             Reply::Confirmed(T_DISCARD_SD) => {
                 cx.session = None;
-                Nav::Push(Box::new(Browser::new(cx.platform.sd_root())))
+                Nav::Push(Box::new(Browser::new(
+                    cx.platform.as_ref(),
+                    cx.platform.sd_root(),
+                )))
             }
             Reply::User(user) => {
                 Nav::busy(format!("Opening the save of {}…", user.name), move |cx| {
@@ -242,8 +246,8 @@ impl View for Users {
             .iter()
             .map(|u| {
                 Row::new(&u.name).help(match self.purpose {
-                    UserPurpose::OpenGame => "Opens this user's Animal Crossing save. Close the game first.",
-                    UserPurpose::Restore => "Replaces this user's Animal Crossing save with the backup. Close the game first.",
+                    UserPurpose::OpenGame => "Opens the console-wide Animal Crossing island save. Close the game first.",
+                    UserPurpose::Restore => "Replaces the console-wide Animal Crossing island save with the backup. Close the game first.",
                 })
             })
             .collect()
@@ -297,7 +301,6 @@ pub fn users_screen(cx: &mut Cx, purpose: UserPurpose) -> Box<dyn View> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
     Folder,
-    SaveFolder,
     Zip,
     MainDat,
 }
@@ -310,37 +313,31 @@ pub struct Browser {
 }
 
 impl Browser {
-    pub fn new(dir: PathBuf) -> Self {
+    pub fn new(p: &dyn crate::platform::Platform, dir: PathBuf) -> Self {
         let mut b = Self {
             dir,
             entries: Vec::new(),
             error: None,
         };
-        b.load();
+        b.load(p);
         b
     }
 
-    fn load(&mut self) {
+    fn load(&mut self, p: &dyn crate::platform::Platform) {
         self.entries.clear();
-        let rd = match std::fs::read_dir(&self.dir) {
-            Ok(rd) => rd,
+        let entries = match p.game_entries(&self.dir) {
+            Ok(entries) => entries,
             Err(e) => {
-                self.error = Some(e.to_string());
+                self.error = Some(e);
                 return;
             }
         };
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
+        for (name, directory) in entries {
             if name.starts_with('.') {
                 continue;
             }
-            let path = e.path();
-            let kind = if path.is_dir() {
-                if path.join("main.dat").is_file() {
-                    EntryKind::SaveFolder
-                } else {
-                    EntryKind::Folder
-                }
+            let kind = if directory {
+                EntryKind::Folder
             } else if name.to_ascii_lowercase().ends_with(".zip") {
                 EntryKind::Zip
             } else if name.eq_ignore_ascii_case("main.dat") {
@@ -353,9 +350,8 @@ impl Browser {
         self.entries.sort_by(|a, b| {
             let rank = |k: EntryKind| match k {
                 EntryKind::MainDat => 0,
-                EntryKind::SaveFolder => 1,
-                EntryKind::Folder => 2,
-                EntryKind::Zip => 3,
+                EntryKind::Folder => 1,
+                EntryKind::Zip => 2,
             };
             rank(a.1)
                 .cmp(&rank(b.1))
@@ -389,10 +385,6 @@ impl View for Browser {
                 EntryKind::Folder => {
                     Row::new(format!("{name}/")).help("A folder. Press A to look inside.")
                 }
-                EntryKind::SaveFolder => Row::new(format!("{name}/"))
-                    .value("Save")
-                    .style(Style::Action)
-                    .help("This folder holds a save (main.dat). Press A to open it."),
                 EntryKind::Zip => Row::new(name.clone()).value("ZIP").help(
                     "A .zip archive. Press A to open the save inside. Saving rewrites the archive.",
                 ),
@@ -404,14 +396,39 @@ impl View for Browser {
             .collect()
     }
 
-    fn activate(&mut self, _cx: &mut Cx, row: usize) -> Nav {
+    fn activate(&mut self, cx: &mut Cx, row: usize) -> Nav {
         let Some((name, kind)) = self.entries.get(row) else {
             return Nav::Stay;
         };
         let path = self.dir.join(name);
         match kind {
-            EntryKind::Folder => Nav::Push(Box::new(Browser::new(path))),
+            EntryKind::Folder => Nav::Push(Box::new(Browser::new(cx.platform.as_ref(), path))),
             _ => Self::open(path),
+        }
+    }
+
+    fn button(&mut self, _cx: &mut Cx, button: u32, _row: usize) -> Option<Nav> {
+        if button != btn::Y || self.error.is_some() {
+            return None;
+        }
+        if !self
+            .entries
+            .iter()
+            .any(|(_, kind)| *kind == EntryKind::MainDat)
+        {
+            return Some(Nav::message(
+                "Choose a save folder",
+                "This folder has no main.dat. Open the folder that contains your Animal Crossing save.",
+            ));
+        }
+        Some(Self::open(self.dir.clone()))
+    }
+
+    fn hints(&self, _cx: &Cx, _row: usize) -> Vec<(&'static str, &'static str)> {
+        if self.error.is_some() {
+            Vec::new()
+        } else {
+            vec![("Y", "Use this folder")]
         }
     }
 
@@ -438,8 +455,7 @@ impl View for Browser {
                 facts: Vec::new(),
             };
         }
-        let mut i = rows
-            .get(row)
+        rows.get(row)
             .map(|r| Info {
                 title: r.label.clone(),
                 text: r.help.clone(),
@@ -447,16 +463,9 @@ impl View for Browser {
             })
             .unwrap_or_else(|| Info {
                 title: "Find your save".into(),
-                text: "Look for a folder with main.dat, mainHeader.dat and Villager0 … Villager7 in it.".into(),
+                text: "Open a folder containing main.dat, then press Y to use it.".into(),
                 facts: Vec::new(),
-            });
-        if let Some((name, EntryKind::SaveFolder)) = self.entries.get(row) {
-            let p = self.dir.join(name);
-            if let Ok(meta) = std::fs::metadata(p.join("main.dat")) {
-                i.facts.push(("main.dat".into(), fmt::size(meta.len())));
-            }
-        }
-        i
+            })
     }
 }
 
@@ -529,7 +538,7 @@ impl View for BackupMenu {
     fn rows(&self, _cx: &Cx) -> Vec<Row> {
         vec![
             Row::new("Restore to the game…").style(Style::Action).help(
-                "Replace a user's Animal Crossing save on this console with this backup. What is in the game now is backed up first. Close the game before you do this.",
+                "Replace the console-wide Animal Crossing island save with this backup. What is in the game now is backed up first. Close the game before you do this.",
             ),
             Row::new("Open in the editor").help(
                 "Open this backup to look at it or edit it. Saving writes into the backup folder, not the game.",
@@ -540,11 +549,11 @@ impl View for BackupMenu {
 
     fn activate(&mut self, cx: &mut Cx, row: usize) -> Nav {
         match row {
-            0 => Nav::Push(users_screen(cx, UserPurpose::Restore)),
-            1 if cx.dirty() => Nav::message(
+            0 | 1 if cx.dirty() => Nav::message(
                 "Save or discard first",
-                "The open save has unsaved changes. Save them, or discard them in the editor, then open the backup.",
+                "The open save has unsaved changes. Save them, or discard them in the editor, then use the backup.",
             ),
+            0 => Nav::Push(users_screen(cx, UserPurpose::Restore)),
             1 => Browser::open(self.b.path.clone()),
             2 => Nav::confirm_danger(
                 "Delete this backup?",
@@ -567,8 +576,7 @@ impl View for BackupMenu {
         match r {
             Reply::User(u) => {
                 let text = format!(
-                    "Replace the Animal Crossing save of {} with the backup of {} from {}?\n\nWhat is in the game now is backed up first. Animal Crossing must be closed.",
-                    u.name,
+                    "Replace the console-wide Animal Crossing island save with the backup of {} from {}?\n\nWhat is in the game now is backed up first. Animal Crossing must be closed.",
                     self.b.town,
                     fmt::display_stamp(self.b.time)
                 );
@@ -581,6 +589,13 @@ impl View for BackupMenu {
                 };
                 let b = self.b.clone();
                 Nav::busy("Restoring…", move |cx| {
+                    if cx
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| matches!(s.origin, session::Origin::Game(_)))
+                    {
+                        cx.session = None;
+                    }
                     match session::restore_backup(cx.platform.as_mut(), &b, &user) {
                         Ok(msg) => {
                             cx.toast(msg);
@@ -590,13 +605,15 @@ impl View for BackupMenu {
                     }
                 })
             }
-            Reply::Confirmed(T_DELETE) => match session::delete_backup(&self.b) {
-                Ok(()) => {
-                    cx.toast("Backup deleted.");
-                    Nav::Pop
+            Reply::Confirmed(T_DELETE) => {
+                match session::delete_backup(cx.platform.as_ref(), &self.b) {
+                    Ok(()) => {
+                        cx.toast("Backup deleted.");
+                        Nav::Pop
+                    }
+                    Err(e) => Nav::message("The backup could not be deleted", e),
                 }
-                Err(e) => Nav::message("The backup could not be deleted", e),
-            },
+            }
             _ => Nav::Stay,
         }
     }

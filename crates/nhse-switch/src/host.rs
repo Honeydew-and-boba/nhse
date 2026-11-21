@@ -164,6 +164,36 @@ impl Platform for HostPlatform {
         Ok(staging)
     }
 
+    fn game_entries(&self, path: &Path) -> Result<Vec<(String, bool)>, String> {
+        std::fs::read_dir(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .map(|entry| {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let kind = entry.file_type().map_err(|e| e.to_string())?;
+                Ok((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    kind.is_dir(),
+                ))
+            })
+            .collect()
+    }
+
+    fn clear_work_dir(&self, path: &Path) -> Result<(), String> {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn clear_backup_dir(&self, path: &Path) -> Result<(), String> {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
     fn commit_game_save(&mut self) -> Result<(), String> {
         if self.fail_commit {
             return Err("2002-0001 (simulated)".into());

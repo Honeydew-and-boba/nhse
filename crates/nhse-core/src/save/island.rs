@@ -47,6 +47,12 @@ pub enum DesignKind {
     Tailor,
 }
 
+impl DesignKind {
+    pub fn is_pro(self) -> bool {
+        matches!(self, Self::Pro | Self::Tailor)
+    }
+}
+
 impl HorizonSave {
     fn m(&self) -> &[u8] {
         &self.main.data

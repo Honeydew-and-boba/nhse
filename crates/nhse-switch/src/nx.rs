@@ -17,7 +17,10 @@ extern "C" {
         out_size: usize,
     ) -> i32;
     fn nhse_users(uids: *mut u8, names: *mut c_char, max: i32, rc: *mut u32) -> i32;
-    fn nhse_mount_save(uid: *const u8, title_id: u64) -> u32;
+    fn nhse_mount_save(title_id: u64) -> u32;
+    fn nhse_list_save_dir(path: *const c_char, out: *mut c_char, capacity: usize) -> i32;
+    fn nhse_clear_work_dir(path: *const c_char) -> i32;
+    fn nhse_clear_backup_dir(path: *const c_char) -> i32;
     fn nhse_commit_save() -> u32;
     fn nhse_unmount_save();
     fn nhse_local_time() -> i64;
@@ -98,15 +101,76 @@ impl Platform for Nx {
             .collect())
     }
 
-    fn mount_game_save(&mut self, user: &UserAccount) -> Result<PathBuf, String> {
-        let rc = unsafe { nhse_mount_save(user.uid.as_ptr(), crate::session::GAME_TITLE_ID) };
+    fn mount_game_save(&mut self, _user: &UserAccount) -> Result<PathBuf, String> {
+        let rc = unsafe { nhse_mount_save(crate::session::GAME_TITLE_ID) };
         match rc {
             0 => Ok(PathBuf::from(MOUNT)),
             _ => Err(format!(
-                "The Animal Crossing save of {} could not be opened ({}). Close the game and try again. A user who has never played has no save.",
-                user.name,
+                "The Animal Crossing island save could not be opened ({}). Close the game and try again.",
                 result_code(rc)
             )),
+        }
+    }
+
+    fn game_entries(&self, path: &std::path::Path) -> Result<Vec<(String, bool)>, String> {
+        let path_c = cstring(&path.to_string_lossy());
+        let mut data = vec![0 as c_char; 4096];
+        let n = loop {
+            let n = unsafe { nhse_list_save_dir(path_c.as_ptr(), data.as_mut_ptr(), data.len()) };
+            if n < 0 {
+                return Err(format!(
+                    "{}: directory listing failed (errno {}).",
+                    path.display(),
+                    -n
+                ));
+            }
+            let n = n as usize;
+            if n <= data.len() {
+                break n;
+            }
+            data.try_reserve_exact(n - data.len()).map_err(|_| {
+                format!("{}: not enough memory to list this folder.", path.display())
+            })?;
+            data.resize(n, 0);
+        };
+        let mut entries = Vec::new();
+        let mut pos = 0;
+        while pos < n {
+            let directory = data[pos] != 0;
+            pos += 1;
+            let raw = unsafe { CStr::from_ptr(data[pos..].as_ptr()) };
+            let name = raw.to_string_lossy().into_owned();
+            pos += raw.to_bytes().len() + 1;
+            entries.push((name, directory));
+        }
+        Ok(entries)
+    }
+
+    fn clear_work_dir(&self, path: &std::path::Path) -> Result<(), String> {
+        let path_c = cstring(&path.to_string_lossy());
+        let rc = unsafe { nhse_clear_work_dir(path_c.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}: cleanup failed (errno {}).",
+                path.display(),
+                -rc
+            ))
+        }
+    }
+
+    fn clear_backup_dir(&self, path: &std::path::Path) -> Result<(), String> {
+        let path_c = cstring(&path.to_string_lossy());
+        let rc = unsafe { nhse_clear_backup_dir(path_c.as_ptr()) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}: backup cleanup failed (errno {}).",
+                path.display(),
+                -rc
+            ))
         }
     }
 
@@ -146,13 +210,14 @@ impl Platform for Nx {
 pub extern "C" fn nhse_main() -> i32 {
     std::panic::set_hook(Box::new(|info| {
         // the app aborts after a panic: leave a note on the SD card
-        let _ = std::fs::create_dir_all("sdmc:/switch/nhse");
+        let _ =
+            nhse_core::save::provider::create_dir_all(std::path::Path::new("sdmc:/switch/nhse"));
         let _ = std::fs::write(
             "sdmc:/switch/nhse/crash.txt",
             format!("NHSE {}: {info}\n", env!("CARGO_PKG_VERSION")),
         );
     }));
-    let _ = std::fs::create_dir_all("sdmc:/switch/nhse");
+    let _ = nhse_core::save::provider::create_dir_all(std::path::Path::new("sdmc:/switch/nhse"));
     crate::app(Box::new(Nx)).run();
     0
 }

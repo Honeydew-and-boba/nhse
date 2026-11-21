@@ -6,6 +6,7 @@
 //! transaction: if anything fails, nothing is committed and the game's save stays as it was.
 use crate::fmt;
 use crate::platform::{Platform, UserAccount};
+use nhse_core::save::provider::{create_dir_all, path_exists, path_len, read_file, read_text};
 use nhse_core::save::SaveSource;
 use nhse_core::HorizonSave;
 use std::fs;
@@ -120,12 +121,16 @@ const BACKUP_INFO: &str = "nhse-backup.txt";
 /// Backups, newest first.
 pub fn list_backups(p: &dyn Platform) -> Vec<BackupInfo> {
     let mut out = Vec::new();
-    let Ok(rd) = fs::read_dir(backups_dir(p)) else {
+    let root = backups_dir(p);
+    let Ok(entries) = p.game_entries(&root) else {
         return out;
     };
-    for e in rd.flatten() {
-        let path = e.path();
-        let Ok(info) = fs::read_to_string(path.join(BACKUP_INFO)) else {
+    for (name, directory) in entries {
+        if !directory || name.ends_with(".part") {
+            continue;
+        }
+        let path = root.join(&name);
+        let Ok(info) = read_text(&path.join(BACKUP_INFO)) else {
             continue;
         };
         let get = |k: &str| {
@@ -135,12 +140,12 @@ pub fn list_backups(p: &dyn Platform) -> Vec<BackupInfo> {
                 .to_string()
         };
         out.push(BackupInfo {
-            name: e.file_name().to_string_lossy().into(),
+            name,
             town: get("town"),
             source: get("source"),
             time: get("time").parse().unwrap_or(0),
             fingerprint: get("fingerprint"),
-            size: dir_size(&path),
+            size: dir_size(p, &path),
             path,
         });
     }
@@ -148,31 +153,43 @@ pub fn list_backups(p: &dyn Platform) -> Vec<BackupInfo> {
     out
 }
 
-fn dir_size(p: &Path) -> u64 {
-    let Ok(rd) = fs::read_dir(p) else { return 0 };
-    rd.flatten()
-        .map(|e| {
-            let p = e.path();
-            if p.is_dir() {
-                dir_size(&p)
+fn dir_size(platform: &dyn Platform, path: &Path) -> u64 {
+    let Ok(entries) = platform.game_entries(path) else {
+        return 0;
+    };
+    entries
+        .into_iter()
+        .map(|(name, directory)| {
+            let p = path.join(name);
+            if directory {
+                dir_size(platform, &p)
             } else {
-                e.metadata().map(|m| m.len()).unwrap_or(0)
+                path_len(&p).unwrap_or(0)
             }
         })
         .sum()
 }
 
-/// Backs up the save files of `src`. Returns `None` when the newest backup is identical.
+/// Backs up the save files of `src`. Returns `None` when an independent backup has identical contents.
 pub fn create_backup(
     p: &dyn Platform,
     src: &SaveSource,
     town: &str,
     source_label: &str,
+    protected: &Path,
 ) -> Result<Option<PathBuf>, String> {
     let fp = fingerprint(src)?;
     let existing = list_backups(p);
-    if existing.iter().any(|b| b.fingerprint == fp) {
-        return Ok(None);
+    for b in &existing {
+        if b.path != src.location()
+            && b.fingerprint == fp
+            && fingerprint(&SaveSource::Folder(b.path.clone()))
+                .ok()
+                .as_ref()
+                == Some(&fp)
+        {
+            return Ok(None);
+        }
     }
     let now = p.local_time();
     let safe = nhse_core::util::strings::clean_file_name(town);
@@ -183,16 +200,19 @@ pub fn create_backup(
     };
     let mut dir = backups_dir(p).join(format!("{safe} {}", fmt::file_stamp(now)));
     let mut k = 2;
-    while dir.exists() {
+    while path_exists(&dir) {
         dir = backups_dir(p).join(format!("{safe} {} ({k})", fmt::file_stamp(now)));
         k += 1;
     }
-    let tmp = dir.with_extension("part");
-    let _ = fs::remove_dir_all(&tmp);
+    let tmp = dir.with_file_name(format!(
+        "{}.part",
+        dir.file_name().unwrap().to_string_lossy()
+    ));
+    p.clear_backup_dir(&tmp)?;
     let res = (|| -> Result<(), String> {
         for rel in src.save_files().map_err(err)? {
             let dst = tmp.join(&rel);
-            fs::create_dir_all(dst.parent().unwrap_or(&tmp)).map_err(err)?;
+            create_dir_all(dst.parent().unwrap_or(&tmp)).map_err(err)?;
             fs::write(&dst, src.read(&rel).map_err(err)?).map_err(err)?;
         }
         fs::write(
@@ -203,35 +223,36 @@ pub fn create_backup(
         fs::rename(&tmp, &dir).map_err(err)
     })();
     if let Err(e) = res {
-        let _ = fs::remove_dir_all(&tmp);
+        let _ = p.clear_backup_dir(&tmp);
         return Err(format!("The backup failed: {e}"));
     }
     // keep the newest backups
-    for old in list_backups(p).into_iter().skip(KEEP_BACKUPS) {
-        let _ = fs::remove_dir_all(old.path);
+    let keep_old =
+        KEEP_BACKUPS.saturating_sub(1 + usize::from(existing.iter().any(|b| b.path == protected)));
+    for old in existing
+        .iter()
+        .filter(|b| b.path != protected)
+        .skip(keep_old)
+    {
+        let _ = p.clear_backup_dir(&old.path);
     }
     Ok(Some(dir))
 }
 
-pub fn delete_backup(b: &BackupInfo) -> Result<(), String> {
-    fs::remove_dir_all(&b.path).map_err(err)
+pub fn delete_backup(p: &dyn Platform, b: &BackupInfo) -> Result<(), String> {
+    p.clear_backup_dir(&b.path)
 }
 
 /// Opens a save folder, `main.dat` or `.zip` from the SD card (backing it up first).
 pub fn open_sd(p: &dyn Platform, path: &Path) -> Result<Session, String> {
-    let mut save = HorizonSave::open(path).map_err(err)?;
-    let backup = match create_backup(
+    let save = HorizonSave::open(path).map_err(err)?;
+    let backup = create_backup(
         p,
         &save.source,
         &save.town_name(),
         &path.display().to_string(),
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            save.warnings.push(e);
-            None
-        }
-    };
+        save.source.location(),
+    )?;
     Ok(Session {
         written: content_hashes(&save),
         save,
@@ -242,19 +263,18 @@ pub fn open_sd(p: &dyn Platform, path: &Path) -> Result<Session, String> {
 }
 
 /// Copies every file under `from` into `to` (created as needed). Returns the bytes copied.
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
-    fs::create_dir_all(to)?;
+fn copy_tree(p: &dyn Platform, from: &Path, to: &Path) -> Result<u64, String> {
+    create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
     let mut n = 0;
-    for e in fs::read_dir(from)? {
-        let e = e?;
-        let src = e.path();
-        let dst = to.join(e.file_name());
-        if src.is_dir() {
-            n += copy_tree(&src, &dst)?;
+    for (name, directory) in p.game_entries(from)? {
+        let src = from.join(&name);
+        let dst = to.join(&name);
+        if directory {
+            n += copy_tree(p, &src, &dst)?;
         } else {
-            let data = fs::read(&src)?;
+            let data = read_file(&src).map_err(|e| format!("{}: {e}", src.display()))?;
             n += data.len() as u64;
-            fs::write(&dst, data)?;
+            fs::write(&dst, data).map_err(|e| format!("{}: {e}", dst.display()))?;
         }
     }
     Ok(n)
@@ -263,30 +283,34 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
 /// Copies the game's save of `user` to the working folder (and a backup) and opens it.
 pub fn open_game(p: &mut dyn Platform, user: &UserAccount) -> Result<Session, String> {
     let work = work_dir(p, user);
-    let _ = fs::remove_dir_all(&work);
+    p.clear_work_dir(&work)?;
     let root = p.mount_game_save(user)?;
-    let copied = copy_tree(&root, &work);
+    let copied = copy_tree(p, &root, &work);
     p.unmount_game_save();
     copied.map_err(|e| format!("Could not copy the game's save to the SD card: {e}"))?;
-    if !work.join("main.dat").is_file() {
+    let entries = p.game_entries(&work)?;
+    if !entries
+        .iter()
+        .any(|(name, directory)| name == "main.dat" && !directory)
+    {
+        let entries = entries
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(format!(
-            "{} has no Animal Crossing save yet. Play until the game has saved once.",
-            user.name
+            "The mounted island save has no main.dat. Files found: {}.",
+            if entries.is_empty() { "none" } else { &entries }
         ));
     }
-    let mut save = HorizonSave::open(&work).map_err(err)?;
-    let backup = match create_backup(
+    let save = HorizonSave::open(&work).map_err(err)?;
+    let backup = create_backup(
         p,
         &save.source,
         &save.town_name(),
         &format!("Game save of {}", user.name),
-    ) {
-        Ok(b) => b,
-        Err(e) => {
-            save.warnings.push(e);
-            None
-        }
-    };
+        &work,
+    )?;
     Ok(Session {
         written: content_hashes(&save),
         save,
@@ -307,10 +331,10 @@ fn write_game_files(
     let root = p.mount_game_save(user)?;
     let res = (|| -> Result<(), String> {
         for rel in files {
-            let data = fs::read(from.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+            let data = read_file(&from.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
             let dst = root.join(rel);
             if let Some(parent) = dst.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("{rel}: {e}"))?;
+                create_dir_all(parent).map_err(|e| format!("{rel}: {e}"))?;
             }
             fs::write(&dst, &data).map_err(|e| format!("{rel}: {e}"))?;
         }
@@ -350,7 +374,11 @@ pub fn save(p: &mut dyn Platform, s: &mut Session) -> Result<String, String> {
 }
 
 /// Re-reads the save, discarding unsaved edits.
-pub fn revert(s: &mut Session) -> Result<(), String> {
+pub fn revert(p: &mut dyn Platform, s: &mut Session) -> Result<(), String> {
+    if let Origin::Game(user) = &s.origin {
+        *s = open_game(p, user)?;
+        return Ok(());
+    }
     let path = s.save.source.location().to_path_buf();
     s.save = HorizonSave::open(&path).map_err(err)?;
     s.written = content_hashes(&s.save);
@@ -371,19 +399,24 @@ pub fn restore_backup(
     let files = src.save_files().map_err(err)?;
     // back up what is in the game now, if there is a save
     let work = work_dir(p, user);
-    let _ = fs::remove_dir_all(&work);
+    p.clear_work_dir(&work)?;
     let root = p.mount_game_save(user)?;
-    let copied = copy_tree(&root, &work);
+    let copied = copy_tree(p, &root, &work);
     p.unmount_game_save();
-    if copied.is_ok() && work.join("main.dat").is_file() {
-        if let Ok(cur) = HorizonSave::open(&work) {
-            create_backup(
-                p,
-                &cur.source,
-                &cur.town_name(),
-                &format!("Game save of {} (before a restore)", user.name),
-            )?;
+    copied.map_err(|e| format!("Could not back up the current game save: {e}"))?;
+    if !p.game_entries(&work)?.is_empty() {
+        let cur = HorizonSave::open(&work)
+            .map_err(|e| format!("Current game save could not be read; restore stopped: {e}"))?;
+        if cur.source.save_files().map_err(err)? != files {
+            return Err("The backup and current save have different file sets; restore stopped to avoid leaving stale game files.".into());
         }
+        create_backup(
+            p,
+            &cur.source,
+            &cur.town_name(),
+            &format!("Game save of {} (before a restore)", user.name),
+            &b.path,
+        )?;
     }
     write_game_files(p, user, &b.path, &files)?;
     Ok(format!(

@@ -5,8 +5,13 @@
 // The app itself is Rust (crates/nhse-switch, linked as libnhse_switch.a); it calls the
 // nhse_* functions below (see crates/nhse-switch/src/nx.rs).
 #include <stdint.h>
+#include <dirent.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <time.h>
 
@@ -147,18 +152,135 @@ int nhse_users(uint8_t *uids, char *names, int max, uint32_t *rc_out)
     return total < max ? total : max;
 }
 
-// Mounts the save data of `title_id` for a user as "acnh:/". Returns 0 or a result code.
-uint32_t nhse_mount_save(const uint8_t *uid, uint64_t title_id)
+// Mounts Animal Crossing's console-wide island save as "acnh:/". Returns 0 or a result code.
+uint32_t nhse_mount_save(uint64_t title_id)
 {
     if (g_save_mounted) {
         fsdevUnmountDevice(SAVE_MOUNT);
         g_save_mounted = false;
     }
-    AccountUid u;
-    memcpy(&u, uid, sizeof u);
-    Result rc = fsdevMountSaveData(SAVE_MOUNT, title_id, u);
+    Result rc = fsdevMountDeviceSaveData(SAVE_MOUNT, title_id);
     g_save_mounted = R_SUCCEEDED(rc);
     return rc;
+}
+
+// Rust's Horizon stat/dirent layout differs from newlib's; keep type checks in C.
+int nhse_path_kind(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return 0;
+    return S_ISREG(st.st_mode) ? 1 : S_ISDIR(st.st_mode) ? 2 : 0;
+}
+
+int nhse_path_size(const char *path, uint64_t *size)
+{
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return -errno;
+    *size = (uint64_t)st.st_size;
+    return 0;
+}
+
+// Return the size needed for type/name pairs. Rust uses the wrong Horizon dirent layout.
+int nhse_list_save_dir(const char *path, char *out, size_t capacity)
+{
+    DIR *dir = opendir(path);
+    if (!dir)
+        return -errno;
+    size_t used = 0;
+    struct dirent *entry;
+    for (;;) {
+        errno = 0;
+        entry = readdir(dir);
+        if (!entry) break;
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        size_t len = strlen(entry->d_name) + 1;
+        if (used > INT_MAX - 1 - len) {
+            closedir(dir);
+            return -EOVERFLOW;
+        }
+        if (used + 1 + len > capacity) {
+            used += 1 + len;
+            continue;
+        }
+        char full[PATH_MAX];
+        int n = snprintf(full, sizeof full, "%s%s%s", path, path[strlen(path) - 1] == '/' ? "" : "/", entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof full) {
+            closedir(dir);
+            return -ENAMETOOLONG;
+        }
+        struct stat st;
+        if (stat(full, &st) != 0) {
+            int err = errno;
+            closedir(dir);
+            return -err;
+        }
+        out[used++] = S_ISDIR(st.st_mode) ? 1 : 0;
+        memcpy(out + used, entry->d_name, len);
+        used += len;
+    }
+    int err = errno;
+    closedir(dir);
+    return err ? -err : (int)used;
+}
+
+// Delete only NHSE's SD working copy. C directory entries retain their full names on Horizon.
+static int remove_work_tree(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir)
+        return errno == ENOENT ? 0 : -errno;
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
+            continue;
+        char full[512];
+        int n = snprintf(full, sizeof full, "%s/%s", path, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof full) {
+            closedir(dir);
+            return -ENAMETOOLONG;
+        }
+        struct stat st;
+        if (stat(full, &st) != 0) {
+            int err = errno;
+            closedir(dir);
+            return -err;
+        }
+        int rc = S_ISDIR(st.st_mode) ? remove_work_tree(full) : unlink(full) == 0 ? 0 : -errno;
+        if (rc != 0) {
+            closedir(dir);
+            return rc;
+        }
+    }
+    closedir(dir);
+    return rmdir(path) == 0 ? 0 : -errno;
+}
+
+int nhse_clear_work_dir(const char *path)
+{
+    // Only a 32-digit account work folder may be removed.
+    const char *prefix = "sdmc:/switch/nhse/game/";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(path, prefix, prefix_len) != 0 || strlen(path + prefix_len) != 32)
+        return -EINVAL;
+    for (const char *p = path + prefix_len; *p; p++)
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
+            return -EINVAL;
+    return remove_work_tree(path);
+}
+
+int nhse_clear_backup_dir(const char *path)
+{
+    const char *prefix = "sdmc:/switch/nhse/backups/";
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(path, prefix, prefix_len) != 0)
+        return -EINVAL;
+    const char *name = path + prefix_len;
+    if (!*name || strchr(name, '/') || !strcmp(name, ".") || !strcmp(name, ".."))
+        return -EINVAL;
+    return remove_work_tree(path);
 }
 
 // Commits the writes made to the mounted save data, all at once.

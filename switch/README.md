@@ -17,12 +17,12 @@ It can edit the game's own save directly: no dumping or copying to a computer.
 ## Use
 
 Close Animal Crossing first (press HOME, then X on the game), then choose
-**Animal Crossing on this console** and the user who plays. The save is copied to the SD card and
+**Animal Crossing on this console**. The island save belongs to the console, not a player account. The save is copied to the SD card and
 backed up, and you edit that copy. Press **+** to save: the changed files are written into the
 game's save data and committed in one go. If anything fails while writing, nothing is committed and
 the game's save stays as it was.
 
-You can also open a save from the SD card (a folder with `main.dat`, `main.dat` itself, or a `.zip`).
+Choose **A save on the SD card** to browse from the SD root. Press **A** to enter a folder, **B** to go back, and **Y** inside the folder that contains `main.dat` to open that save. You can also select `main.dat` or a `.zip` directly with **A**.
 
 | Button | Action |
 | --- | --- |
@@ -51,7 +51,14 @@ Numbers and item searches use the system keyboard.
 The bulk actions behave like the desktop app's: story recipes (bridge and campsite kits) and catalog
 entries that crash Nook Shopping are left out.
 
-The map editor, villager replacement, designs and house editing are desktop only for now.
+Additional editors are available at the bottom of the open-save menu:
+
+- **Map editor:** select terrain coordinates to edit ground, elevation and paths; edit either field item layer with placement checks. The side panel shows the terrain and selected tile.
+- **Villagers:** press **X** to search replacement templates, then confirm to replace the villager, house and belongings (game 2.0+).
+- **Custom designs:** normal, PRO, flag and Able Sisters slots; rename, paint individual pixels, change palette colors, and import/export `.nhd`/`.nhpd` files and 32×32 PNGs using full SD paths. PRO PNG imports preserve the other sheets and requantize the shared palette. Exports require a new filename.
+- **Houses:** player and villager wall, roof and door style IDs; player loans and furniture slots in all six rooms and eight layers. Coordinates and style IDs use the system keyboard.
+
+These editors change the working copy. Return to the open-save menu and press **+** to save. Terrain and exterior styles use numeric game IDs; they do not automatically repair neighboring terrain or validate combinations of exterior styles.
 
 ### Files on the SD card
 

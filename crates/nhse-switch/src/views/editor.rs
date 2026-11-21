@@ -25,6 +25,9 @@ pub struct Editor;
 enum ERow {
     Section,
     Player(usize),
+    Map,
+    Designs,
+    Houses,
     Turnips,
     Villagers,
     Museum,
@@ -130,6 +133,11 @@ impl Editor {
             ERow::Close,
             Row::new("Close the save").help("Back to the start screen."),
         ));
+        v.extend([
+            (ERow::Map, Row::new("Map editor")),
+            (ERow::Designs, Row::new("Custom designs")),
+            (ERow::Houses, Row::new("Houses")),
+        ]);
         v
     }
 
@@ -159,6 +167,9 @@ impl View for Editor {
         };
         match id {
             ERow::Player(p) => Nav::Push(Box::new(Player { p })),
+            ERow::Map => Nav::Push(Box::new(super::advanced::Map::new())),
+            ERow::Designs => Nav::Push(Box::new(super::advanced::Designs)),
+            ERow::Houses => Nav::Push(Box::new(super::advanced::Houses)),
             ERow::Turnips => Nav::Push(Box::new(Turnips)),
             ERow::Villagers => Nav::Push(Box::new(Villagers)),
             ERow::Museum => Nav::confirm(
@@ -224,7 +235,10 @@ impl View for Editor {
         match r {
             Reply::Confirmed(T_CLOSE) => Self::close(cx),
             Reply::Confirmed(T_REVERT) => {
-                let res = cx.session.as_mut().map(session::revert);
+                let res = cx
+                    .session
+                    .as_mut()
+                    .map(|s| session::revert(cx.platform.as_mut(), s));
                 match res {
                     Some(Err(e)) => Nav::message("The save could not be reloaded", e),
                     _ => {
@@ -667,6 +681,18 @@ impl Villagers {
 }
 
 impl View for Villagers {
+    fn hints(&self, _: &Cx, _: usize) -> Vec<(&'static str, &'static str)> {
+        vec![("X", "Replace")]
+    }
+    fn button(&mut self, cx: &mut Cx, b: u32, row: usize) -> Option<Nav> {
+        if b == crate::platform::btn::X {
+            Self::list(cx)
+                .get(row)
+                .map(|v| Nav::Push(Box::new(super::advanced::Replacement::new(v.index))))
+        } else {
+            None
+        }
+    }
     fn title(&self, _cx: &Cx) -> String {
         "Villagers".into()
     }
