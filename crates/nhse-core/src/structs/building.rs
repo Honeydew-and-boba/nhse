@@ -75,6 +75,11 @@ const CAMPSITE_DOORS: &[DoorRect] = &[rect(-2, 4, 4, 2)];
 /// whose plot is 90..97 × 142..149, house 90..97 × 142..147 and door 93..96 × 148..150.
 const VILLAGER_BODY: &[DoorRect] = &[rect(-4, -4, 8, 6)];
 
+/// Able Sisters: the plot is 10×8 items, but the four items at its front-left corner
+/// (layer 62..65 × 104..105, absolute 62..65 × 136..137 for the save's building at 67,134) are open
+/// ground. The rest of the front row is the shop front beside the door.
+const ABLES_BODY: &[DoorRect] = &[rect(-5, -4, 10, 6), rect(-1, 2, 6, 2)];
+
 /// Measured entrances for the structures whose doors are known. Several buildings have no
 /// reliable measurements yet, so this is deliberately partial.
 pub fn doors(kind: u16) -> &'static [DoorRect] {
@@ -95,12 +100,22 @@ pub fn movable(kind: u16) -> bool {
     matches!(kind, 1..=19 | 21 | 24 | 25)
 }
 
+impl Building {
+    /// Whether `next` may replace this slot. The game does not rotate placed structures, so an
+    /// angle change is rejected unless the slot becomes a different kind or the structure is a
+    /// bridge/incline, whose angle is real terrain data.
+    pub fn angle_ok(&self, next: &Building) -> bool {
+        self.angle == next.angle || self.kind != next.kind || matches!(self.kind, 26 | 27)
+    }
+}
+
 /// The part of a structure that is actually built, as rectangles in item tiles relative to the
 /// centre. An empty slice means "the whole plot from [`footprint`]", which is the case for every
 /// kind not measured yet. Free ground inside the plot but outside these rectangles stays clear.
 pub fn body(kind: u16) -> &'static [DoorRect] {
     match kind {
         9..=18 => VILLAGER_BODY,
+        24 => ABLES_BODY,
         _ => &[],
     }
 }
@@ -149,6 +164,44 @@ mod tests {
     }
 
     #[test]
+    fn angle_changes_are_rejected_except_for_bridges_and_inclines() {
+        let house = Building {
+            kind: 1,
+            angle: 0,
+            ..Default::default()
+        };
+        assert!(house.angle_ok(&Building {
+            kind: 1,
+            angle: 0,
+            ..Default::default()
+        }));
+        assert!(!house.angle_ok(&Building {
+            kind: 1,
+            angle: 1,
+            ..Default::default()
+        }));
+        // A different kind in the slot is not a rotation.
+        assert!(house.angle_ok(&Building {
+            kind: 9,
+            angle: 3,
+            ..Default::default()
+        }));
+        // Bridges and inclines store the angle the game derives from the terrain.
+        for kind in [26, 27] {
+            let b = Building {
+                kind,
+                angle: 1,
+                ..Default::default()
+            };
+            assert!(b.angle_ok(&Building {
+                kind,
+                angle: 2,
+                ..Default::default()
+            }));
+        }
+    }
+
+    #[test]
     fn doors_use_the_measured_offsets() {
         // Checked against the user's in-game measurements (map layer coordinates + 32 in Y).
         let door = |kind: u16, x: i32, y: i32| {
@@ -193,7 +246,38 @@ mod tests {
             (90, 142, 97, 147)
         );
         assert!(body(1).is_empty()); // player house: not measured yet
-        assert!(body(24).is_empty()); // Able Sisters: not measured yet
+    }
+
+    #[test]
+    fn ables_body_leaves_the_front_left_corner_clear() {
+        // The save's Able Sisters sits at 67,134; plot 62..71 × 130..137, open ground
+        // 62..65 × 136..137 (layer 62..65 × 104..105).
+        let (x, y) = (67, 134);
+        let rects: Vec<_> = body(24)
+            .iter()
+            .map(|b| {
+                (
+                    x + b.dx as i32,
+                    y + b.dy as i32,
+                    x + b.dx as i32 + b.w as i32 - 1,
+                    y + b.dy as i32 + b.h as i32 - 1,
+                )
+            })
+            .collect();
+        assert_eq!(rects, vec![(62, 130, 71, 135), (66, 136, 71, 137)]);
+        let covered = |px: i32, py: i32| {
+            body(24).iter().any(|b| {
+                let bx = x + b.dx as i32;
+                let by = y + b.dy as i32;
+                px >= bx && px < bx + b.w as i32 && py >= by && py < by + b.h as i32
+            })
+        };
+        for px in 62..=65 {
+            for py in 136..=137 {
+                assert!(!covered(px, py), "{px},{py} should be free");
+            }
+        }
+        assert!(covered(66, 136)); // shop front beside the door
     }
 
     #[test]

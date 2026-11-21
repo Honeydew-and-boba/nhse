@@ -75,6 +75,100 @@ pub fn paint_road(
     })
 }
 
+#[derive(Serialize)]
+pub struct TerrainPaintResult {
+    pub changed: usize,
+    pub falls: usize,
+    pub warnings: usize,
+    /// Trees within one terrain tile of a changed tile.
+    pub trees: usize,
+    /// Buildings (whole plots) within one terrain tile of a changed tile.
+    pub buildings: usize,
+    /// Falls skipped because there is no river behind them at the same height.
+    pub dry: usize,
+}
+
+/// Trees and buildings within one terrain tile of the tiles this stroke changed.
+fn changed_objects(
+    s: &nhse_core::HorizonSave,
+    before: &[TerrainTile],
+    after: &[TerrainTile],
+) -> (usize, usize) {
+    let changed: Vec<(usize, usize)> = (0..TILES_W)
+        .flat_map(|x| (0..TILES_H).map(move |y| (x, y)))
+        .filter(|&(x, y)| before[x * TILES_H + y] != after[x * TILES_H + y])
+        .collect();
+    s.nearby_objects(&changed)
+}
+
+/// Paints (`paint = true`) or erases rivers on terrain tiles. Water keeps the tile height;
+/// a water tile one level above water gets a waterfall. `sharp` styles newly created cliff corners.
+#[tauri::command]
+pub fn paint_water(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    paint: bool,
+    sharp: bool,
+) -> CmdResult<TerrainPaintResult> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let before = t.clone();
+        let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
+        let (changed, falls, warnings, dry) =
+            paint::paint_water(&mut t, TILES_W, TILES_H, &targets, paint, sharp)?;
+        let (trees, buildings) = if changed > 0 {
+            changed_objects(s, &before, &t)
+        } else {
+            (0, 0)
+        };
+        if changed > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(TerrainPaintResult {
+            changed,
+            falls,
+            warnings,
+            trees,
+            buildings,
+            dry,
+        })
+    })
+}
+
+/// Raises (`delta = 1`) or lowers (`delta = -1`) land and re-derives its cliff faces.
+/// `sharp` styles newly created cliff corners; existing corners keep their look.
+#[tauri::command]
+pub fn paint_height(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    delta: i32,
+    sharp: bool,
+) -> CmdResult<TerrainPaintResult> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let before = t.clone();
+        let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
+        let (changed, falls, warnings, dry) =
+            paint::paint_height(&mut t, TILES_W, TILES_H, &targets, delta, sharp)?;
+        let (trees, buildings) = if changed > 0 {
+            changed_objects(s, &before, &t)
+        } else {
+            (0, 0)
+        };
+        if changed > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(TerrainPaintResult {
+            changed,
+            falls,
+            warnings,
+            trees,
+            buildings,
+            dry,
+        })
+    })
+}
+
 /// Rendered terrain + acre templates (PNG), `px` pixels per terrain tile.
 #[tauri::command]
 pub fn terrain_png(state: State<AppState>, px: Option<usize>) -> CmdResult<Response> {
@@ -99,17 +193,30 @@ pub struct MapMeta {
     pub design_tiles: Vec<u16>,
     pub design_dims: (usize, usize),
     pub terrain_dims: (usize, usize),
+    /// Highest terrain elevation in the save; the game only supports 0–3.
+    pub max_elevation: u16,
+    /// One elevation per terrain tile, column-major (`x * terrain_dims.1 + y`).
+    pub elevations: Vec<u8>,
 }
 
 #[tauri::command]
 pub fn map_meta(state: State<AppState>) -> CmdResult<MapMeta> {
-    with_save!(state, |s| Ok(MapMeta {
-        acres: s.acres(),
-        plaza: s.plaza(),
-        design_tiles: s.map_design_tiles(),
-        design_dims: s.map_design_dims(),
-        terrain_dims: (TILES_W, TILES_H),
-    }))
+    with_save!(state, |s| {
+        let tiles = s.terrain();
+        let max_elevation = tiles.iter().map(|t| t.elevation).max().unwrap_or(0);
+        Ok(MapMeta {
+            acres: s.acres(),
+            plaza: s.plaza(),
+            design_tiles: s.map_design_tiles(),
+            design_dims: s.map_design_dims(),
+            terrain_dims: (TILES_W, TILES_H),
+            max_elevation,
+            elevations: tiles
+                .iter()
+                .map(|t| t.elevation.min(u8::MAX as u16) as u8)
+                .collect(),
+        })
+    })
 }
 
 #[tauri::command]

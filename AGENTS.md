@@ -113,28 +113,35 @@ Not done yet on Windows:
 
 - **Map editor QoL**: footprints, doors, drag handles and fixed-building warnings are in. Doors
   draw as a translucent plate with a one-terrain-tile glyph and a four-way move badge; only the
-  first part of a multi-part door gets the glyph. Villager houses draw their built body
-  (`building.rs::body`) so the open front row stays clear. Next: verify in-game, fill in the
-  remaining building sizes/doors, and test rotated buildings.
+  first part of a multi-part door gets the glyph. Villager houses and Able Sisters draw their
+  measured built body (`building.rs::body`), leaving their open front ground clear. Buildings cannot
+  be rotated: the Angle field and `set_buildings` reject a change (`building.rs::angle_ok`), except
+  for bridges and inclines whose angle is real terrain data. The Item panel runs Brush → Selected
+  tile → Ground. Next: verify in-game, fill in the remaining building sizes/doors, and check
+  dragging the bridge.
 - **Map editor: custom design patterns**: ground designs (the save's `MyDesignMap`) are drawn from
-  their normal 32×32 thumbnails, with a hover index and a View toggle; PRO values still show as
-  markers because their value encoding is unmeasured. Notes in `docs/map-editor.md`.
+  their normal 32×32 thumbnails, with a hover index and a View toggle. PRO designs cannot be placed
+  on the ground in game (mannequin/painting only), so values at or above `pattern_count` are an
+  unknown value and keep the magenta marker. Notes in `docs/map-editor.md`.
 - **Map editor: path painting**: the Item panel's Ground section paints the eight default path
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
   save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
-  PRO designs are still skipped. Next: test painted paths and designs in-game. Notes in
-  `docs/map-editor.md`.
-- **Map editor: favourites** (not started): a quick-access palette of favourite patterns and paths.
-  Notes in `docs/map-editor.md`.
-- **Map editor: terrain/water/cliff painting** (not started): only the road layer and ground
-  designs are painted; `TerrainTile.model` (rivers, cliffs, elevation) is still import/export only.
-  Notes in `docs/map-editor.md`.
+  Next: test painted paths and designs in-game. Notes in `docs/map-editor.md`.
+- **Map editor: terrain painting**: in — rivers (8-way banks, Rounded/Sharp bends), raise/lower with
+  generated faces and rounded/sharp corners, straight one-level and consecutive falls, the 0–3 limit,
+  the two-level-step refusal, the tree/building warning and semi-manual fall models; see
+  `docs/map-editor.md`. Verified in game (2026-11-20): cliffs, heights, rivers, sharp/round cliff
+  corners and the tree/building warning. **Water mechanics are the remaining rough edge: waterfalls
+  and cascades are still being stabilised (`River3C` also unverified). Back up the save before terrain
+  work.** Open: in-game verification of the fall source rule, cascades and `River3C`; the unmeasured
+  river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); the unmeasured
+  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
 
-Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-pattern-qol` (PR #1:
-`.acnh` imports, usage-flag fix, design editor QoL). `windows-build` and `design-pattern-qol` were
-merged and deleted on `origin`; both still exist locally. Local `master` tracks `upstream/master` at
-`f85aee6` and trails `origin/master`. `map-editor-qol` carries the footprint, door, drag, warning,
-ground-design and path-painting work described in `docs/map-editor.md`.
+Branches (2026-11-21): `origin/master` is `719e792`, the merge of PR #2 (`map-editor-qol`:
+footprints, doors, drag, warnings, ground designs, path painting). `map-editor-qol` adds the terrain
+painting (rivers, cliffs, corners, falls) on top of that and is merged as the next PR.
+`windows-build` and `design-pattern-qol` were merged and deleted on `origin`; both still exist
+locally. Local `master` tracks `upstream/master` at `f85aee6` and trails `origin/master`.
 
 Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.

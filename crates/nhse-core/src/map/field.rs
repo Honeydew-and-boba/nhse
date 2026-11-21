@@ -2,8 +2,9 @@
 use super::grid::ItemGrid;
 use super::terrain::{TerrainTile, TILES_H, TILES_W, TILE_SIZE};
 use super::ITEM_TILES_PER_ACRE;
+use crate::data::items::{item_kind, kinds};
 use crate::save::HorizonSave;
-use crate::structs::Item;
+use crate::structs::{building, Item};
 use crate::util::bits::{get_flag, set_flag};
 use crate::util::bytes::*;
 use serde::{Deserialize, Serialize};
@@ -238,5 +239,106 @@ impl HorizonSave {
         let (w, h) = self.map_design_dims();
         let o = self.main_ofs.my_design_map;
         self.main.data[o..o + w * h * 2].to_vec()
+    }
+
+    // --- painting helpers ------------------------------------------------------------
+
+    /// Trees and building plots within one terrain tile of the given terrain tiles.
+    /// The game normally keeps both clear of cliffs and rivers; painting allows it and warns.
+    pub fn nearby_objects(&self, tiles: &[(usize, usize)]) -> (usize, usize) {
+        let mut bounds: Option<(usize, usize, usize, usize)> = None;
+        for &(x, y) in tiles {
+            let b = bounds.get_or_insert((x, y, x, y));
+            *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+        }
+        let Some((x0, y0, x1, y1)) = bounds else {
+            return (0, 0);
+        };
+        // terrain tile (0,0) sits at absolute item (32,32); one terrain tile is 2 items
+        let (ax0, ay0) = (32 + x0.saturating_sub(1) * 2, 32 + y0.saturating_sub(1) * 2);
+        let (ax1, ay1) = (32 + (x1 + 2) * 2, 32 + (y1 + 2) * 2);
+        let hit = |x: usize, y: usize, w: usize, h: usize| {
+            x < ax1 && x + w > ax0 && y < ay1 && y + h > ay0
+        };
+
+        let layout = self.field_layout();
+        let tree = kinds().tree;
+        let mut trees = 0;
+        for layer in 0..2 {
+            let g = self.field_layer(layer);
+            for x in 0..layout.width {
+                for y in 0..layout.height {
+                    let it = g.get(x, y);
+                    if it.is_none() || it.is_extension() || item_kind(it.id) != tree {
+                        continue;
+                    }
+                    let (w, h) = ItemGrid::footprint(&it);
+                    if hit(x + layout.offset_x, y + layout.offset_y, w, h) {
+                        trees += 1;
+                    }
+                }
+            }
+        }
+
+        let mut buildings = 0;
+        for b in self.buildings() {
+            if b.kind == 0 {
+                continue;
+            }
+            // the whole plot: the buffer applies to the plot edge, not the measured body
+            let (fw, fh) = building::footprint(b.kind);
+            let (fw, fh) = (fw as usize, fh as usize);
+            if hit(
+                (b.x as usize).saturating_sub(fw),
+                (b.y as usize).saturating_sub(fh),
+                fw * 2,
+                fh * 2,
+            ) {
+                buildings += 1;
+            }
+        }
+        (trees, buildings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::tables::tables;
+    use crate::editing::fieldtools::{matches, ClearKind};
+    use crate::save::revision::REVISIONS;
+    use crate::testing::write_synthetic_save;
+
+    fn tree_id() -> u16 {
+        *tables()
+            .field_items
+            .keys()
+            .find(|&&id| matches(ClearKind::Trees, &Item::new(id)))
+            .expect("the item table has a tree")
+    }
+
+    #[test]
+    fn counts_trees_and_buildings_within_one_tile() {
+        let dir = std::env::temp_dir().join(format!("nhse-nearby-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        write_synthetic_save(&dir, REVISIONS.len() - 1, 1, 1);
+        let mut s = HorizonSave::open(&dir).unwrap();
+        let l = s.field_layout();
+        let tree = Item::new(tree_id());
+        let mut g = s.field_layer(0);
+        // terrain tile 4 covers absolute items 40..41, so its one-tile buffer starts at 38
+        g.set(38 - l.offset_x, 40 - l.offset_y, tree);
+        g.set(36 - l.offset_x, 40 - l.offset_y, tree); // two terrain tiles away
+        s.set_field_layer(0, &g);
+        assert_eq!(s.nearby_objects(&[(4, 4)]), (1, 0));
+
+        let mut b = s.buildings();
+        b[0].kind = 1; // player house, 5×4 terrain tiles around the centre
+        b[0].x = 40;
+        b[0].y = 40;
+        s.set_buildings(&b);
+        assert_eq!(s.nearby_objects(&[(4, 4)]), (1, 1));
+        assert_eq!(s.nearby_objects(&[(20, 20)]), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
