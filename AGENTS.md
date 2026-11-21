@@ -127,13 +127,14 @@ Not done yet on Windows:
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
   save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
   Next: test painted paths and designs in-game. Notes in `docs/map-editor.md`.
-- **Map editor: terrain painting**: in — rivers (8-way banks), raise/lower with generated faces,
-  straight one-level falls, the 0–3 limit, the two-level-step refusal, the tree/building warning, the
-  Rounded/Sharp corner choice and semi-manual fall models; see `docs/map-editor.md`.
-  **Experimental:** only a single 1×1 cliff raise has been loaded in game (2026-11-20). Rivers,
-  multi-tile cliffs, heights 2–3, waterfalls and the sharp corner style are untested in game. Open:
-  in-game verification of painted paths/designs and terrain; the unmeasured river nub/junction shapes
-  (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); automatic corner and multi-level waterfalls; the unmeasured
+- **Map editor: terrain painting**: in — rivers (8-way banks, Rounded/Sharp bends), raise/lower with
+  generated faces and rounded/sharp corners, straight one-level and consecutive falls, the 0–3 limit,
+  the two-level-step refusal, the tree/building warning and semi-manual fall models; see
+  `docs/map-editor.md`. Verified in game (2026-11-20): cliffs, heights, rivers, sharp/round cliff
+  corners and the tree/building warning. **Water mechanics are the remaining rough edge: waterfalls
+  and cascades are still being stabilised (`River3C` also unverified). Back up the save before terrain
+  work.** Open: in-game verification of the fall source rule, cascades and `River3C`; the unmeasured
+  river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`); the unmeasured
   `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
 
 Branches (2026-11-20): `origin/master` is `3ef7009`, the merge of `design-pattern-qol` (PR #1:

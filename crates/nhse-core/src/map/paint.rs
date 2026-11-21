@@ -315,7 +315,8 @@ fn cliff_corner_angle(corner: u8) -> Option<u16> {
 }
 
 /// Water model and angle for a tile with the given water neighbours.
-fn water_shape(sides: u8, corners: u8) -> (u16, u16) {
+/// `sharp` only changes a two-adjacent-side bend (`River3B` / `River3C`).
+fn water_shape(sides: u8, corners: u8, sharp: bool) -> (u16, u16) {
     match sides.count_ones() {
         0 => (terrain_model("River0A"), 0),
         1 => (
@@ -335,10 +336,12 @@ fn water_shape(sides: u8, corners: u8) -> (u16, u16) {
                 0
             };
             if corner != 0 {
-                (
-                    terrain_model("River3B"),
-                    water_corner_angle(corner).unwrap_or(0),
-                )
+                let model = if sharp {
+                    terrain_model("River3C")
+                } else {
+                    terrain_model("River3B")
+                };
+                (model, water_corner_angle(corner).unwrap_or(0))
             } else {
                 // N|S or E|W: straight channel. `River2A` has no extra corners either way.
                 (terrain_model("River2A"), (sides == E | W) as u16)
@@ -609,12 +612,14 @@ fn set_fall(
 
 /// Re-shapes every water tile in `affected` and rebuilds waterfalls at its cliff edges.
 /// Existing fall strips touched by the set are re-capped so their ends stay correct.
+/// Returns `(changed fall tiles, waterfall warnings, falls skipped for lack of an upstream river)`.
 fn retile_water(
     tiles: &mut [TerrainTile],
     w: usize,
     h: usize,
     affected: &mut BTreeSet<(usize, usize)>,
-) -> crate::Result<(usize, usize)> {
+    sharp: bool,
+) -> crate::Result<(usize, usize, usize)> {
     // Pull whole existing strips into the set before any of them is reshaped.
     let existing: Vec<(usize, usize)> = affected
         .iter()
@@ -645,7 +650,17 @@ fn retile_water(
             continue;
         }
         let (sides, corners) = water_neighbours(tiles, w, h, x, y);
-        let (model, angle) = water_shape(sides, corners);
+        let (model, angle) = water_shape(sides, corners, sharp);
+        // A tile that is already a bend keeps its rounded/sharp look; the stroke's style only
+        // applies to bends it creates.
+        let (rounded, angular) = (terrain_model("River3B"), terrain_model("River3C"));
+        let model = if (model == rounded || model == angular)
+            && (t.model == rounded || t.model == angular)
+        {
+            t.model
+        } else {
+            model
+        };
         let t = &mut tiles[x * h + y];
         if t.model != model || t.angle != angle {
             t.model = model;
@@ -659,6 +674,7 @@ fn retile_water(
 
     // Waterfalls: a water tile one level above water in one straight direction.
     let mut warnings = 0;
+    let mut dry = 0;
     let mut candidates = Vec::new();
     for &(x, y) in affected.iter() {
         let t = tiles[x * h + y];
@@ -696,7 +712,22 @@ fn retile_water(
             continue;
         }
         if let Some(dir) = drops.first().copied() {
-            candidates.push((x, y, dir));
+            // A straight fall needs water behind it (upstream): either river at the same height,
+            // or water one level up, which is the fall above in a cascade. Without a source the
+            // game leaves the back of the fall open and you see through it.
+            let (bx, by) = match dir {
+                S => (0i64, -1i64),
+                E => (-1, 0),
+                N => (0, 1),
+                _ => (1, 0),
+            };
+            let sourced = tile(tiles, w, h, x as i64 + bx, y as i64 + by)
+                .is_some_and(|n| is_water(n) && (n.elevation == e || n.elevation == e + 1));
+            if sourced {
+                candidates.push((x, y, dir));
+            } else {
+                dry += 1; // left as a river until the water behind it is painted
+            }
         } else if onto_land {
             warnings += 1; // water at a cliff edge with no water below
         }
@@ -732,7 +763,7 @@ fn retile_water(
         }
         changed += assign_fall_run(tiles, h, &run, angle, e);
     }
-    Ok((changed, warnings))
+    Ok((changed, warnings, dry))
 }
 
 fn count_changed(before: &[TerrainTile], after: &[TerrainTile]) -> usize {
@@ -786,7 +817,7 @@ pub fn paint_water(
     targets: &[(usize, usize)],
     paint: bool,
     sharp: bool,
-) -> crate::Result<(usize, usize, usize)> {
+) -> crate::Result<(usize, usize, usize, usize)> {
     if tiles.len() != w * h {
         return Err(crate::Error::Invalid(
             "terrain size does not match its grid".into(),
@@ -828,9 +859,13 @@ pub fn paint_water(
         }
         let t = &mut next[x * h + y];
         if paint {
-            t.model = terrain_model("River8A");
-            t.angle = 0;
-            t.variation = 0;
+            // Land and managed falls become open water; an existing river keeps its model so a
+            // bend's rounded/sharp style survives a repaint.
+            if !is_water(t) || (is_fall(t.model) && is_managed_fall(t.model)) {
+                t.model = terrain_model("River8A");
+                t.angle = 0;
+                t.variation = 0;
+            }
             t.road = 0;
             t.road_variation = 0;
             t.road_angle = 0;
@@ -851,7 +886,7 @@ pub fn paint_water(
         }
     }
 
-    let (falls, warnings) = retile_water(&mut next, w, h, &mut affected)?;
+    let (falls, warnings, dry) = retile_water(&mut next, w, h, &mut affected, sharp)?;
     if !paint {
         for &(x, y) in affected.iter() {
             retile_land_tile(&mut next, w, h, x, y, sharp)
@@ -860,7 +895,7 @@ pub fn paint_water(
     }
     let changed = count_changed(tiles, &next);
     tiles.copy_from_slice(&next);
-    Ok((changed, falls, warnings))
+    Ok((changed, falls, warnings, dry))
 }
 
 fn unsupported_cliff(x: usize, y: usize) -> String {
@@ -879,7 +914,7 @@ pub fn paint_height(
     targets: &[(usize, usize)],
     delta: i32,
     sharp: bool,
-) -> crate::Result<(usize, usize, usize)> {
+) -> crate::Result<(usize, usize, usize, usize)> {
     if tiles.len() != w * h {
         return Err(crate::Error::Invalid(
             "terrain size does not match its grid".into(),
@@ -924,11 +959,11 @@ pub fn paint_height(
         retile_land_tile(&mut next, w, h, x, y, sharp)
             .map_err(|(x, y)| crate::Error::Invalid(unsupported_cliff(x, y)))?;
     }
-    let (falls, warnings) = retile_water(&mut next, w, h, &mut affected)?;
+    let (falls, warnings, dry) = retile_water(&mut next, w, h, &mut affected, sharp)?;
     check_steps(tiles, &next, w, h)?;
     let changed = count_changed(tiles, &next);
     tiles.copy_from_slice(&next);
-    Ok((changed, falls, warnings))
+    Ok((changed, falls, warnings, dry))
 }
 
 #[cfg(test)]
@@ -981,7 +1016,7 @@ mod tests {
         h: usize,
         targets: &[(usize, usize)],
         delta: i32,
-    ) -> crate::Result<(usize, usize, usize)> {
+    ) -> crate::Result<(usize, usize, usize, usize)> {
         paint_height(tiles, w, h, targets, delta, false)
     }
 
@@ -1048,15 +1083,48 @@ mod tests {
     }
 
     #[test]
-    fn waterfall_strip_gets_measured_caps() {
+    fn sharp_river_bends_use_river3c() {
+        let (w, h) = (5, 5);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let targets: Vec<(usize, usize)> =
+            (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
+        paint_water(&mut tiles, w, h, &targets, true, true).unwrap();
+        let sharp = terrain_model("River3C");
+        assert_eq!(tiles[h + 1].model, sharp); // NW bend
+        assert_eq!(tiles[3 * h + 3].model, sharp); // SE bend
+                                                   // repainting with the rounded style keeps the existing bends sharp
+        paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        assert_eq!(tiles[h + 1].model, sharp);
+    }
+
+    #[test]
+    fn a_fall_without_water_behind_stays_a_river() {
         let (w, h) = (4, 4);
         let mut tiles = vec![TerrainTile::default(); w * h];
-        // the water row is one level above the water below it, with same-height land behind
+        // one row at e1 above a row of water at e0, and land at the same height behind it
         for x in 0..w {
             tiles[x * h].elevation = 1;
             tiles[x * h + 1].elevation = 1;
         }
         paint_block(&mut tiles, w, h, 0, 1, w - 1, 2);
+        let targets: Vec<(usize, usize)> = (0..w).map(|x| (x, 1)).collect();
+        let (_, falls, _, dry) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        assert_eq!((falls, dry), (0, w));
+        for x in 0..w {
+            assert!(is_river(tiles[x * h + 1].model));
+        }
+    }
+
+    #[test]
+    fn waterfall_strip_gets_measured_caps() {
+        let (w, h) = (4, 4);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        // the water row is one level above the water below it, with same-height water behind
+        for x in 0..w {
+            tiles[x * h].elevation = 1;
+            tiles[x * h + 1].elevation = 1;
+        }
+        paint_block(&mut tiles, w, h, 0, 0, w - 1, 2);
         let (_, _, _, _, fall200, fall400) = water_models();
         let fall300 = terrain_model("Fall300");
         for x in 0..w {
@@ -1294,10 +1362,10 @@ mod tests {
         let mut tiles = vec![TerrainTile::default(); w * h];
         let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
         paint(&mut tiles, w, h, &top, 1).unwrap();
-        // water one level below the north face
+        // water one level below the north face, and the river behind it on the plateau
         tiles[2 * h].model = terrain_model("River8A");
         let before = tiles.clone();
-        paint_water(&mut tiles, w, h, &[(2, 1)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(2, 1), (2, 2)], true, false).unwrap();
         assert!(is_fall(tiles[2 * h + 1].model));
         assert_eq!(tiles[2 * h + 1].angle, 2); // drops north
                                                // the south face has land below, so it cannot become water
@@ -1312,7 +1380,7 @@ mod tests {
         let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
         paint(&mut tiles, w, h, &top, 1).unwrap();
         tiles[2 * h].model = terrain_model("River8A");
-        paint_water(&mut tiles, w, h, &[(2, 1)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(2, 1), (2, 2)], true, false).unwrap();
         assert!(is_fall(tiles[2 * h + 1].model));
         paint_water(&mut tiles, w, h, &[(2, 1)], false, false).unwrap();
         let t = tiles[2 * h + 1];
@@ -1356,6 +1424,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cascade_gets_a_fall_on_both_levels() {
+        let (w, h) = (4, 5);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        // two rows at e2 (pool + upper fall), one at e1 (the lower fall), one at e0
+        for x in 0..w {
+            tiles[x * h].elevation = 2;
+            tiles[x * h + 1].elevation = 2;
+            tiles[x * h + 2].elevation = 1;
+        }
+        paint_block(&mut tiles, w, h, 0, 0, w - 1, 3);
+        for x in 0..w {
+            assert!(is_fall(tiles[x * h + 1].model), "upper fall x={x}");
+            assert!(is_fall(tiles[x * h + 2].model), "lower fall x={x}");
+        }
+    }
+
+    #[test]
     fn painting_the_same_water_twice_changes_nothing() {
         let (w, h) = (5, 5);
         let mut tiles = vec![TerrainTile::default(); w * h];
@@ -1363,7 +1448,7 @@ mod tests {
         let before = tiles.clone();
         let targets: Vec<(usize, usize)> =
             (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
-        let (changed, falls, _) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        let (changed, falls, _, _) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
         assert_eq!((changed, falls), (0, 0));
         assert_eq!(tiles, before);
     }

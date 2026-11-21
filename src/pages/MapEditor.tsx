@@ -705,6 +705,7 @@ export default function MapEditor() {
       ].filter(Boolean).join(" and ");
       const notes = [
         near && `${near} within one terrain tile. The game normally keeps these away from cliffs and rivers.`,
+        res.dry && `${res.dry} water edge${res.dry === 1 ? "" : "s"} need water behind ${res.dry === 1 ? "it" : "them"} for a waterfall.`,
         res.warnings && `${res.warnings} water edge${res.warnings === 1 ? "" : "s"} need water one level below for a waterfall.`,
       ].filter(Boolean).join(" ");
       const title = res.changed
@@ -1111,10 +1112,9 @@ export default function MapEditor() {
               left unchanged, and painting is limited to 0–3.
             </Callout>
           )}
-          <Callout kind="warn" title="Experimental: check in game">
-            Only a single 1×1 cliff raise has been checked in game so far. Rivers, multi-tile cliffs,
-            higher plateaus, waterfall models and sharp corners are untested; check the island in game
-            after editing.
+          <Callout kind="warn" title="Back up your save first">
+            Cliffs, rivers and corners work; waterfalls and cascading falls are still being
+            stabilised. Back up the save before terrain work and check every fall in game.
           </Callout>
           <div className="row wrap">
             <Button size="sm" icon={<Droplets />} variant={tbrush?.kind === "water" ? "primary" : "default"}
@@ -1148,7 +1148,7 @@ export default function MapEditor() {
             </div>
           ) : <div className="tiny faint">The terrain model table is not available.</div>}
           <div className="tiny faint">
-            {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall when it sits one level above water; paint the lower river first. Water clears ground designs.</>
+            {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall when it sits one level above water with river behind it at the same height; paint those first. Water clears ground designs.</>
               : tbrush?.kind === "water-erase" ? <>Drag to erase rivers. The tile becomes grass at the same height; cliff faces next to it are restored.</>
               : tbrush?.kind === "cliff" ? <>Drag to {tbrush.delta > 0 ? "raise" : "lower"} land. Faces are generated automatically for single tiles, strips, ridges and whole plateaus; increase the brush for larger areas. Water has to be erased first. New corners use the <b>{sharp ? "sharp" : "rounded"}</b> style; corners that already exist keep theirs.</>
               : tbrush?.kind === "shape" ? <>Click one tile to set that exact model and rotation. Use it for edges the autotiler refuses and for waterfall models; hand-set falls are kept by later water strokes.</>

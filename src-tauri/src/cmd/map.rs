@@ -84,6 +84,8 @@ pub struct TerrainPaintResult {
     pub trees: usize,
     /// Buildings (whole plots) within one terrain tile of a changed tile.
     pub buildings: usize,
+    /// Falls skipped because there is no river behind them at the same height.
+    pub dry: usize,
 }
 
 /// Trees and buildings within one terrain tile of the tiles this stroke changed.
@@ -112,7 +114,7 @@ pub fn paint_water(
         let mut t = s.terrain();
         let before = t.clone();
         let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
-        let (changed, falls, warnings) =
+        let (changed, falls, warnings, dry) =
             paint::paint_water(&mut t, TILES_W, TILES_H, &targets, paint, sharp)?;
         let (trees, buildings) = if changed > 0 {
             changed_objects(s, &before, &t)
@@ -128,6 +130,7 @@ pub fn paint_water(
             warnings,
             trees,
             buildings,
+            dry,
         })
     })
 }
@@ -145,7 +148,7 @@ pub fn paint_height(
         let mut t = s.terrain();
         let before = t.clone();
         let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
-        let (changed, falls, warnings) =
+        let (changed, falls, warnings, dry) =
             paint::paint_height(&mut t, TILES_W, TILES_H, &targets, delta, sharp)?;
         let (trees, buildings) = if changed > 0 {
             changed_objects(s, &before, &t)
@@ -161,6 +164,7 @@ pub fn paint_height(
             warnings,
             trees,
             buildings,
+            dry,
         })
     })
 }

@@ -267,6 +267,57 @@ fn shade(c: Rgb, f: f32) -> Rgb {
     ]
 }
 
+/// Wall pixels of a cliff tile from its measured model and angle. `None` means the shape is not
+/// measured, so the caller keeps the neutral all-four-edges look.
+fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
+    const N: u8 = 1;
+    const E: u8 = 2;
+    const S: u8 = 4;
+    const W: u8 = 8;
+    const T: i32 = 3; // wall band thickness
+    const R: f32 = 8.0; // rounded outside corner radius
+    let a = angle & 3;
+    let (low, rounded) = match m {
+        0x16 => (0xF, false),                                      // Cliff0A, pillar
+        0x19 => (0xF & ![S, E, N, W][a as usize], false),          // Cliff1A, one connected side
+        0x1C => (if a == 0 { N | S } else { E | W }, false),       // Cliff2A, opposite sides
+        0x1F => ([N | W, S | W, S | E, N | E][a as usize], true),  // Cliff3B, rounded corner
+        0x20 => ([N | W, S | W, S | E, N | E][a as usize], false), // Cliff3C, sharp corner
+        0x25 => ([W, S, E, N][a as usize], false),                 // Cliff5B, one low side
+        0x28 => {
+            // Cliff7A: no low side, one sunken diagonal corner
+            let nub = match a {
+                0 => nub_bl(x, y),
+                1 => nub_br(x, y),
+                2 => nub_tr(x, y),
+                _ => nub_tl(x, y),
+            };
+            return Some(nub);
+        }
+        _ => return None,
+    };
+    let mut wall = (low & N != 0 && y < T)
+        || (low & S != 0 && y >= 16 - T)
+        || (low & W != 0 && x < T)
+        || (low & E != 0 && x >= 16 - T);
+    if rounded {
+        for (bits, px, py) in [
+            ((N | W), x, y),           // outside corner NW
+            ((N | E), 15 - x, y),      // NE
+            ((S | E), 15 - x, 15 - y), // SE
+            ((S | W), x, 15 - y),      // SW
+        ] {
+            if low & bits != bits || px >= R as i32 || py >= R as i32 {
+                continue;
+            }
+            // A rounded corner pulls the wall back from the tile corner as a quarter arc.
+            let d = ((px * px + py * py) as f32).sqrt();
+            wall = d > R - T as f32 && d <= R;
+        }
+    }
+    Some(wall)
+}
+
 /// Color of pixel (x, y) (0..16) inside a terrain tile.
 pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
     if is_road(t.road) {
@@ -305,10 +356,11 @@ pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
     }
     if is_cliff(m) {
         let base = CLIFF[(t.elevation as usize).min(3)];
-        return if x == 0 || y == 0 || x == 15 || y == 15 {
-            CLIFF_EDGE
-        } else {
-            base
+        return match cliff_wall(m, t.angle, x, y) {
+            Some(true) => CLIFF_EDGE,
+            Some(false) => base,
+            None if x == 0 || y == 0 || x == 15 || y == 15 => CLIFF_EDGE,
+            None => base,
         };
     }
     grass(t.elevation)
@@ -317,4 +369,24 @@ pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
 /// Short label for a terrain model (e.g. `River2B`).
 pub fn model_name(m: u16) -> &'static str {
     crate::data::tables::enum_name("TerrainUnitModel", m as i64).unwrap_or("?")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cliff_wall_shows_rounded_and_sharp_corners() {
+        // NW outside corner: rounded pulls the wall back, sharp keeps the right angle
+        assert_eq!(cliff_wall(0x1F, 0, 0, 0), Some(false)); // Cliff3B
+        assert_eq!(cliff_wall(0x20, 0, 0, 0), Some(true)); // Cliff3C
+                                                           // straight face: Cliff5B angle 1 has the low side south
+        assert_eq!(cliff_wall(0x25, 1, 8, 15), Some(true));
+        assert_eq!(cliff_wall(0x25, 1, 8, 2), Some(false));
+        // pillar: body in the middle, wall on every side
+        assert_eq!(cliff_wall(0x16, 0, 8, 8), Some(false));
+        assert_eq!(cliff_wall(0x16, 0, 8, 0), Some(true));
+        // an unmeasured model keeps the neutral fallback
+        assert_eq!(cliff_wall(0x1D, 0, 0, 0), None);
+    }
 }
