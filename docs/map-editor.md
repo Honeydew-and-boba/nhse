@@ -158,12 +158,12 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 
 ## Painting rivers, cliffs and waterfalls
 
-> **In-game status (2026-11-22).** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded
-> cliff *and* river corners, automatic waterfalls, consecutive (cascade) falls, painted paths and
-> ground designs, and moving buildings. Still **unverified**: the recessed fall that was wrongly
-> refused until 2026-11-21 (a fall with no river behind it and no pool below — this save's acre G6 is
-> the ground truth for it) and the river junction models the sample save never used (see Measured
-> river table). **Back up the save before terrain work.**
+> **In-game status (2026-11-21).** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded
+> cliff *and* river corners, automatic waterfalls, consecutive (cascade) falls, the recessed fall
+> that was wrongly refused until 2026-11-21 (no river behind it, no pool below), a one-tile-wide
+> two-level cascade built with the editor, painted paths and ground designs, and moving buildings.
+> Still **unverified**: the river junction models the sample save never used (see Measured river
+> table). **Back up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
@@ -279,10 +279,11 @@ the two-level gorge:
 | anything | dry land (one-tile fall) | `Fall101` | — |
 | anything | water (one-tile fall) | `Fall100` | — |
 
-`Fall101` is measured (the 3×3 pad in the test acre). `Fall100` is the inference for a one-tile fall
-that carries on into water: the 2026-11-21 build wrote `Fall101` there and the game drew a grass lip
-where the upper fall landed on the fall below. Dump the same one-tile cascade built by hand in game
-to confirm or correct it.
+`Fall101` is measured (the 3×3 pad in the test acre). `Fall100` was inferred as the counterpart for a
+one-tile fall that carries on into water — the 2026-11-21 build wrote `Fall101` there and the game
+drew a grass lip where the upper fall landed on the fall below — and a one-tile-wide two-level
+cascade built by the editor now looks right in game (2026-11-21). The model itself has not been
+dumped from a game-made copy yet.
 
 Re-deriving every fall tile of the sample save from the rules above reproduces all 74 of them,
 model and angle, including both gorge tiers and every pad in the test acre. Contexts the save never
@@ -370,12 +371,17 @@ data layout changed.
 
 Hot fix (2026-11-21): waterfalls no longer need water behind them or a pool below, and the fall
 model is chosen from what is behind and under the fall as measured on acre G6 of a fresh save (see
-Waterfalls). A generated single-tile fall is now `Fall101`, a recessed strip uses `Fall208`/`Fall308`
-and the cascade-top/bottom families use their measured models; unknown contexts keep the plain
-`Fall200`/`Fall300`/`Fall400` strip. The `dry` count left the `paint_water`/`paint_height` return and
-`TerrainPaintResult`; the toast now only reports corner drops. The dry rule was checked by
-re-deriving every fall tile of the save: 74 of 74 match the game byte for byte. **In game it is not
-verified yet.**
+Waterfalls). A recessed strip uses `Fall208`/`Fall308`, a one-tile fall ends on land with `Fall101`
+and drops into water with `Fall100`, and the cascade-top/bottom families use their measured models;
+unknown contexts keep the plain `Fall200`/`Fall300`/`Fall400` strip. The `dry` count left the
+`paint_water`/`paint_height` return and `TerrainPaintResult`; the toast now only reports corner
+drops. A one-tile pond in the middle of a fall cross is now `River4C` instead of open water. The
+rules were checked by re-deriving every fall tile of the save: 74 of 74 match the game byte for byte.
+Verified in game (2026-11-21): a recessed fall with no source, and a one-tile-wide two-level cascade
+built with the editor, including the `Fall100` join and the `River4C` top.
+
+Known limit after that test: `Fall100` is inferred from the game's own fall families and matched in
+game, but it has not been dumped from a copy the game placed itself.
 
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house
@@ -402,8 +408,9 @@ measure the river junction models.
 ## Remaining goals (not started — handoff notes)
 
 1. **Terrain painting follow-ups.** Rivers, cliffs, sharp/rounded corners on both, straight one-level
-   waterfalls and semi-manual fall models are in and verified in game (see above). Still open: the
-   unmeasured river nub/junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`), which the generator
-   fills as open water, and the `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants.
-   Corner falls do not exist in the game; a fall that drops more than one level is refused unless a
-   terrace buffers it.
+   waterfalls, the recessed (sourceless) fall and semi-manual fall models are in and verified in game
+   (see above). Still open: the unmeasured river junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`), which
+   the generator fills as open water (`4C` is now used for the 1×1 pond inside a cross of falls), the
+   `Fall102`/`Fall103` one-tile variants and the `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x`
+   style variants. Corner falls do not exist in the game; a fall that drops more than one level is
+   refused unless a terrace buffers it.

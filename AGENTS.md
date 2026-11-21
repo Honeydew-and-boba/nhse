@@ -136,11 +136,14 @@ two jobs race to create the release. It has not been run yet.
   2026-11-21 (hot fix): a fall needs **no water behind it and no pool below** — the player paints
   water on a plateau edge and the game draws the fall recessed into the cliff face — and the fall
   model now follows the measured table for recessed strips, cascade tops/bottoms and single-tile
-  falls (`Fall101`). That re-derives all 74 fall tiles of the sample save exactly, but it is **not
-  verified in game yet**. Corner falls do not exist in the game, and a fall dropping more than one
-  level is refused unless a terrace buffers it. Open: the unmeasured river nub/junction shapes
-  (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`), which the generator fills as open water, and the unmeasured
-  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants. **Back up the save before terrain work.**
+  falls (`Fall101` on land, `Fall100` into water). That re-derives all 74 fall tiles of the sample
+  save exactly. Verified in game (2026-11-21): a recessed fall with no source and a one-tile-wide
+  two-level cascade built with the editor. `Fall100` still matches the game's own family but was not
+  dumped from a game-placed copy. Corner falls do not exist in the game, and a fall dropping more
+  than one level is refused unless a terrace buffers it. Open: the unmeasured river junction shapes
+  (`4A`, `4B`, `5A`, `6A`, `6B`), which the generator fills as open water (`4C` is now used for the
+  1×1 pond inside a cross of falls), and the unmeasured `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
+  **Back up the save before terrain work.**
 
 Branches (2026-11-22): the fork holds `master` only. `origin/master` is `da1ffb0`, the merge of PR #3
 (`map-editor-qol`: footprints, doors, drag, warnings, ground designs, path painting, terrain
