@@ -224,8 +224,8 @@ fn is_water(t: &TerrainTile) -> bool {
 /// by later water strokes.
 fn is_managed_fall(model: u16) -> bool {
     [
-        "Fall101", "Fall200", "Fall202", "Fall204", "Fall208", "Fall300", "Fall302", "Fall304",
-        "Fall308", "Fall400", "Fall403", "Fall408", "Fall421", "Fall422",
+        "Fall100", "Fall101", "Fall200", "Fall202", "Fall204", "Fall208", "Fall300", "Fall302",
+        "Fall304", "Fall308", "Fall400", "Fall403", "Fall408", "Fall421", "Fall422",
     ]
     .iter()
     .any(|name| model == terrain_model(name))
@@ -360,8 +360,9 @@ fn water_shape(sides: u8, corners: u8, sharp: bool) -> (u16, u16) {
             side_angle(!sides & 0xF).unwrap_or(0),
         ),
         _ => {
-            // Four sides water. One land diagonal is the measured `7A` nub; the other
-            // combinations need models this save never used, so open water is the safe fill.
+            // Four sides water. Measured nubs: one land diagonal is `7A`, all four is `4C`
+            // (the 1x1 pond inside a fall cross). The other combinations are unmeasured, so
+            // open water is the safe fill.
             let land = !corners & 0xF;
             match land.count_ones() {
                 0 => (terrain_model("River8A"), 0),
@@ -369,6 +370,7 @@ fn water_shape(sides: u8, corners: u8, sharp: bool) -> (u16, u16) {
                     terrain_model("River7A"),
                     land_corner_angle(land).unwrap_or(0),
                 ),
+                4 => (terrain_model("River4C"), 0),
                 _ => (terrain_model("River8A"), 0), // shortcut: unmeasured multi-nub junction
             }
         }
@@ -548,9 +550,8 @@ fn fall_run(
 /// where the player placed the falls; see `docs/map-editor.md`.
 #[derive(Clone, Copy, PartialEq)]
 enum FallKind {
-    /// One tile on its own, no strip.
-    Single,
-    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip.
+    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip. A one-tile fall
+    /// dropping into water is `Fall100`.
     Plain,
     /// No water behind and no water below: the fall sits recessed in the cliff face.
     Recessed,
@@ -604,7 +605,6 @@ fn plain_fall(n: usize, from_ccw: usize) -> u16 {
 fn fall_model(kind: FallKind, n: usize, from_ccw: usize, angle: u16) -> u16 {
     let (ccw_end, cw_end) = (from_ccw == 0, from_ccw + 1 == n);
     match kind {
-        FallKind::Single => terrain_model("Fall101"),
         FallKind::Recessed => match (ccw_end, cw_end) {
             (true, _) => terrain_model("Fall208"),
             (_, true) => terrain_model("Fall308"),
@@ -661,12 +661,20 @@ fn assign_fall_run(
     let mut changed = 0;
     for (i, &p) in run.iter().enumerate() {
         let from_ccw = if ccw_first { i } else { n - 1 - i };
-        let kind = if n == 1 {
-            FallKind::Single
+        let model = if n == 1 {
+            // A one-tile fall ends on dry land with `Fall101` (measured); a fall that carries on
+            // into water below uses `Fall100`.
+            let (dx, dy) = drop_vector(angle);
+            let base = tile(tiles, w, h, p.0 as i64 + dx, p.1 as i64 + dy);
+            if base.is_some_and(is_water) {
+                terrain_model("Fall100")
+            } else {
+                terrain_model("Fall101")
+            }
         } else {
-            fall_kind(tiles, w, h, p, angle, elevation)
+            let kind = fall_kind(tiles, w, h, p, angle, elevation);
+            fall_model(kind, n, from_ccw, angle)
         };
-        let model = fall_model(kind, n, from_ccw, angle);
         changed += set_fall(tiles, h, p, model, angle, elevation) as usize;
     }
     changed
@@ -1551,6 +1559,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_one_tile_fall_into_water_uses_fall100() {
+        let (w, h) = (6, 6);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &top, 1).unwrap();
+        // a river below the north face, then one water tile on the face itself
+        paint_water(&mut tiles, w, h, &[(2, 0)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(2, 1)], true, false).unwrap();
+        let fall = tiles[2 * h + 1];
+        assert_eq!(fall.model, terrain_model("Fall100"), "drops into the river");
+        assert_eq!((fall.angle, fall.elevation), (2, 1));
+    }
+
+    #[test]
+    fn a_one_tile_pond_inside_a_fall_cross_uses_river4c() {
+        let (w, h) = (5, 5);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        // water on all four sides of the middle tile, land on its diagonals
+        let cross = [(2usize, 2usize), (2, 1), (3, 2), (2, 3), (1, 2)];
+        paint_water(&mut tiles, w, h, &cross, true, false).unwrap();
+        assert_eq!(tiles[2 * h + 2].model, terrain_model("River4C"));
+        assert_eq!(tiles[2 * h + 2].angle, 0);
+    }
     #[test]
     fn painting_the_same_water_twice_changes_nothing() {
         let (w, h) = (5, 5);

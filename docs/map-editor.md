@@ -204,11 +204,14 @@ Checked against a real 3.0.3 save (811 river tiles). `sides` are the four water 
 | 2 adjacent sides | `River3B` | water corner: SE 0, NE 1, NW 2, SW 3 |
 | 3 sides | `River5B` | land side: W 0, S 1, E 2, N 3 |
 | 4 sides, no land diagonal | `River8A` | 0 |
+| 4 sides, all four land diagonals (a 1×1 pond) | `River4C` | 0 |
 | 4 sides, one land diagonal | `River7A` | land corner: SW 0, SE 1, NE 2, NW 3 |
 
 `River3C` (sharp bend) is written when **Corners** is set to Sharp; an existing bend keeps its
-style. Four water sides with two or more land diagonals need the junction/nub models this save never
-used; the generator fills them as `River8A` (open water) and the shape fixer can replace them.
+style. Four water sides with two or three land diagonals still need junction models this save never
+showed; the generator fills them as `River8A` (open water) and the shape fixer can replace them.
+`River4C` was measured on the test acre's 3×3 pad, whose middle is water with falls on all four
+sides and cliff corners on all four diagonals; the top of a one-tile-wide cascade has the same shape.
 
 ### Measured cliff table
 
@@ -273,7 +276,13 @@ the two-level gorge:
 | dry land or cliff at the same height (recessed) | dry land | `Fall208` / `Fall308` | `Fall400` (unmeasured) |
 | dry land or cliff at the same height | the fall below (cascade top) | `Fall204` / `Fall304` | `Fall408` |
 | a fall one level up (cascade bottom) | dry land | `Fall208` (east drop) / `Fall302`; `Fall202` (west drop) / `Fall308` | `Fall403`, with `Fall422` (east drop) or `Fall421` (west drop) second from the north end |
-| anything | a one-tile fall | `Fall101` | — |
+| anything | dry land (one-tile fall) | `Fall101` | — |
+| anything | water (one-tile fall) | `Fall100` | — |
+
+`Fall101` is measured (the 3×3 pad in the test acre). `Fall100` is the inference for a one-tile fall
+that carries on into water: the 2026-11-21 build wrote `Fall101` there and the game drew a grass lip
+where the upper fall landed on the fall below. Dump the same one-tile cascade built by hand in game
+to confirm or correct it.
 
 Re-deriving every fall tile of the sample save from the rules above reproduces all 74 of them,
 model and angle, including both gorge tiers and every pad in the test acre. Contexts the save never
