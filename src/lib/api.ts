@@ -100,7 +100,7 @@ export interface Board { built: GDate; latest_unique_id: number; posts: Post[]; 
 export interface Building { kind: number; x: number; y: number; angle: number; bit: number; type_: number; type_arg: number; unique_id: number; unused: number; }
 export interface Plaza { x: number; z: number; }
 export interface MapMeta { acres: number[]; plaza: Plaza; design_tiles: number[]; design_dims: [number, number]; terrain_dims: [number, number]; max_elevation: number; elevations: number[]; }
-export interface TerrainPaintResult { changed: number; falls: number; warnings: number; trees: number; buildings: number; dry: number; }
+export interface TerrainPaintResult { changed: number; falls: number; warnings: number; trees: number; buildings: number; }
 export interface Rect { x: number; y: number; w: number; h: number; }
 export type ClearKind = "weeds" | "trees" | "flowers" | "bushes" | "plants" | "fences" | "stones" | "holes" | "field_objects" | "placed_items" | "shells" | "branches" | "everything";
 export type Arrangement = "square" | "horizontal" | "vertical";

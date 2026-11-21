@@ -223,9 +223,17 @@ fn is_water(t: &TerrainTile) -> bool {
 /// Fall models the autotiler manages. Any other fall model is a hand-set stamp and is left alone
 /// by later water strokes.
 fn is_managed_fall(model: u16) -> bool {
-    model == terrain_model("Fall200")
-        || model == terrain_model("Fall300")
-        || model == terrain_model("Fall400")
+    [
+        "Fall101", "Fall200", "Fall202", "Fall204", "Fall208", "Fall300", "Fall302", "Fall304",
+        "Fall308", "Fall400", "Fall403", "Fall408", "Fall421", "Fall422",
+    ]
+    .iter()
+    .any(|name| model == terrain_model(name))
+}
+
+/// `(dx, dy)` of the direction a fall drops: south 0, east 1, north 2, west 3.
+fn drop_vector(angle: u16) -> (i64, i64) {
+    [(0, 1), (1, 0), (0, -1), (-1, 0)][angle as usize & 3]
 }
 
 fn in_bounds(x: i64, y: i64, w: usize, h: usize) -> bool {
@@ -536,49 +544,129 @@ fn fall_run(
     run
 }
 
-/// Sets the 200/300 end caps and 400 middle of one fall strip.
+/// What the game draws behind and under one fall tile. Every variant below was measured on a save
+/// where the player placed the falls; see `docs/map-editor.md`.
+#[derive(Clone, Copy, PartialEq)]
+enum FallKind {
+    /// One tile on its own, no strip.
+    Single,
+    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip.
+    Plain,
+    /// No water behind and no water below: the fall sits recessed in the cliff face.
+    Recessed,
+    /// A fall landing on the fall of the tier below.
+    CascadeTop,
+    /// A fall under the fall of the tier above, dropping onto dry land.
+    CascadeBottom,
+}
+
+fn fall_kind(
+    tiles: &[TerrainTile],
+    w: usize,
+    h: usize,
+    p: (usize, usize),
+    angle: u16,
+    e: u16,
+) -> FallKind {
+    let (dx, dy) = drop_vector(angle);
+    let (x, y) = (p.0 as i64, p.1 as i64);
+    let back = tile(tiles, w, h, x - dx, y - dy);
+    let base = tile(tiles, w, h, x + dx, y + dy);
+    let water_behind = back.is_some_and(|t| is_water(t) && t.elevation == e);
+    let water_above = back.is_some_and(|t| is_water(t) && t.elevation == e + 1);
+    let base_water = base.is_some_and(is_water);
+    if base.is_some_and(|t| is_fall(t.model)) && !water_behind {
+        FallKind::CascadeTop
+    } else if !base_water && water_above {
+        FallKind::CascadeBottom
+    } else if !base_water && !water_behind {
+        FallKind::Recessed
+    } else {
+        FallKind::Plain
+    }
+}
+
+/// The plain strip: `Fall200` at the counter-clockwise end, `Fall300` at the clockwise end,
+/// `Fall400` in the middle.
+fn plain_fall(n: usize, from_ccw: usize) -> u16 {
+    if from_ccw == 0 {
+        terrain_model("Fall200")
+    } else if from_ccw + 1 == n {
+        terrain_model("Fall300")
+    } else {
+        terrain_model("Fall400")
+    }
+}
+
+/// Measured model for one tile of a fall strip. `from_ccw` counts from the strip end 90 degrees
+/// counter-clockwise of the drop. Contexts the sample save never showed fall back to the plain
+/// strip, which is verified in game.
+fn fall_model(kind: FallKind, n: usize, from_ccw: usize, angle: u16) -> u16 {
+    let (ccw_end, cw_end) = (from_ccw == 0, from_ccw + 1 == n);
+    match kind {
+        FallKind::Single => terrain_model("Fall101"),
+        FallKind::Recessed => match (ccw_end, cw_end) {
+            (true, _) => terrain_model("Fall208"),
+            (_, true) => terrain_model("Fall308"),
+            _ => terrain_model("Fall400"),
+        },
+        FallKind::CascadeTop => match (ccw_end, cw_end) {
+            (true, _) => terrain_model("Fall204"),
+            (_, true) => terrain_model("Fall304"),
+            _ => terrain_model("Fall408"),
+        },
+        // Measured for east and west drops only; a north or south drop keeps the plain strip.
+        FallKind::CascadeBottom => match (angle & 3, from_ccw, n) {
+            (1, 0, _) => terrain_model("Fall208"),
+            (3, i, n) if i + 1 == n => terrain_model("Fall308"),
+            (1, i, n) if i + 1 == n => terrain_model("Fall302"),
+            (3, 0, _) => terrain_model("Fall202"),
+            (1, 1, _) => terrain_model("Fall422"),
+            // 421 is the second tile from the north end of a westward strip, which is the end
+            // nearest the clockwise side.
+            (3, i, n) if i + 2 == n => terrain_model("Fall421"),
+            (1 | 3, ..) => terrain_model("Fall403"),
+            _ => plain_fall(n, from_ccw),
+        },
+        FallKind::Plain => plain_fall(n, from_ccw),
+    }
+}
+
+/// Sets the measured model for every tile of one fall strip.
 fn assign_fall_run(
     tiles: &mut [TerrainTile],
+    w: usize,
     h: usize,
     run: &[(usize, usize)],
     angle: u16,
     elevation: u16,
 ) -> usize {
-    if run.is_empty() {
+    let n = run.len();
+    if n == 0 {
         return 0;
     }
-    let (middle, end_200) = (terrain_model("Fall400"), terrain_model("Fall200"));
-    let (first, last) = (run[0], run[run.len() - 1]);
-    // The 200 cap sits at the end 90 degrees counter-clockwise from the drop. Measured on the
-    // save for south, east and west drops; north follows by rotation.
-    let ccw = match angle & 3 {
+    // The 200 end sits 90 degrees counter-clockwise from the drop. Measured on the save for all
+    // four directions.
+    let (ccwx, ccwy) = match angle & 3 {
         0 => (1i64, 0i64),
         1 => (0, -1),
         2 => (-1, 0),
         _ => (0, 1),
     };
-    let Some(second) = run.get(1) else {
-        return set_fall(tiles, h, first, middle, angle, elevation) as usize;
-    };
     let forward = (
-        second.0 as i64 - first.0 as i64,
-        second.1 as i64 - first.1 as i64,
+        run[n - 1].0 as i64 - run[0].0 as i64,
+        run[n - 1].1 as i64 - run[0].1 as i64,
     );
-    let two_hundred = if forward.0 * ccw.0 + forward.1 * ccw.1 > 0 {
-        last
-    } else {
-        first
-    };
-    let three_hundred = if two_hundred == first { last } else { first };
+    let ccw_first = forward.0 * ccwx + forward.1 * ccwy < 0;
     let mut changed = 0;
-    for &p in run {
-        let model = if p == two_hundred {
-            end_200
-        } else if p == three_hundred {
-            terrain_model("Fall300")
+    for (i, &p) in run.iter().enumerate() {
+        let from_ccw = if ccw_first { i } else { n - 1 - i };
+        let kind = if n == 1 {
+            FallKind::Single
         } else {
-            middle
+            fall_kind(tiles, w, h, p, angle, elevation)
         };
+        let model = fall_model(kind, n, from_ccw, angle);
         changed += set_fall(tiles, h, p, model, angle, elevation) as usize;
     }
     changed
@@ -612,14 +700,14 @@ fn set_fall(
 
 /// Re-shapes every water tile in `affected` and rebuilds waterfalls at its cliff edges.
 /// Existing fall strips touched by the set are re-capped so their ends stay correct.
-/// Returns `(changed fall tiles, waterfall warnings, falls skipped for lack of an upstream river)`.
+/// Returns `(changed fall tiles, waterfall warnings)`.
 fn retile_water(
     tiles: &mut [TerrainTile],
     w: usize,
     h: usize,
     affected: &mut BTreeSet<(usize, usize)>,
     sharp: bool,
-) -> crate::Result<(usize, usize, usize)> {
+) -> crate::Result<(usize, usize)> {
     // Pull whole existing strips into the set before any of them is reshaped.
     let existing: Vec<(usize, usize)> = affected
         .iter()
@@ -672,9 +760,11 @@ fn retile_water(
         }
     }
 
-    // Waterfalls: a water tile one level above water in one straight direction.
+    // Waterfalls: a water tile one level above a drop in a straight direction. Neither water
+    // behind the fall nor a pool under it is needed: the game draws a fall with a dry back
+    // recessed into the cliff face, and players place falls that way. Measured in game; see
+    // `docs/map-editor.md`.
     let mut warnings = 0;
-    let mut dry = 0;
     let mut candidates = Vec::new();
     for &(x, y) in affected.iter() {
         let t = tiles[x * h + y];
@@ -686,7 +776,6 @@ fn retile_water(
             continue;
         }
         let mut drops = Vec::new();
-        let mut onto_land = false;
         let mut too_steep = false;
         for (dir, dx, dy) in [(S, 0i64, 1i64), (E, 1, 0), (N, 0, -1), (W, -1, 0)] {
             let Some(n) = tile(tiles, w, h, x as i64 + dx, y as i64 + dy) else {
@@ -695,10 +784,8 @@ fn retile_water(
             if n.elevation < e {
                 if n.elevation + 1 < e {
                     too_steep = true;
-                } else if is_water(n) {
-                    drops.push(dir);
                 } else {
-                    onto_land = true;
+                    drops.push(dir);
                 }
             }
         }
@@ -707,29 +794,11 @@ fn retile_water(
                 "Water at {x},{y} drops more than one level. Add a one-tile terrace for the waterfall."
             )));
         }
-        if drops.len() > 1 || (drops.len() == 1 && onto_land) {
-            warnings += 1; // corner, or water over land: only straight falls are generated
-            continue;
-        }
-        if let Some(dir) = drops.first().copied() {
-            // A straight fall needs water behind it (upstream): either river at the same height,
-            // or water one level up, which is the fall above in a cascade. Without a source the
-            // game leaves the back of the fall open and you see through it.
-            let (bx, by) = match dir {
-                S => (0i64, -1i64),
-                E => (-1, 0),
-                N => (0, 1),
-                _ => (1, 0),
-            };
-            let sourced = tile(tiles, w, h, x as i64 + bx, y as i64 + by)
-                .is_some_and(|n| is_water(n) && (n.elevation == e || n.elevation == e + 1));
-            if sourced {
-                candidates.push((x, y, dir));
-            } else {
-                dry += 1; // left as a river until the water behind it is painted
-            }
-        } else if onto_land {
-            warnings += 1; // water at a cliff edge with no water below
+        match drops.len() {
+            0 => {}
+            1 => candidates.push((x, y, drops[0])),
+            // The game has no corner-fall models, so a corner keeps the river.
+            _ => warnings += 1,
         }
     }
     for &(x, y, dir) in &candidates {
@@ -761,9 +830,9 @@ fn retile_water(
             seen.insert(p);
             affected.insert(p);
         }
-        changed += assign_fall_run(tiles, h, &run, angle, e);
+        changed += assign_fall_run(tiles, w, h, &run, angle, e);
     }
-    Ok((changed, warnings, dry))
+    Ok((changed, warnings))
 }
 
 fn count_changed(before: &[TerrainTile], after: &[TerrainTile]) -> usize {
@@ -806,10 +875,12 @@ fn check_steps(
 }
 
 /// Paints or erases rivers. Water keeps the tile's elevation; a water tile that sits one level
-/// above water in a straight direction gets a waterfall strip.
+/// above a drop in a straight direction gets a waterfall strip. The drop may go onto land: the
+/// game draws a fall with no water behind it recessed into the cliff face, and no pool below is
+/// needed either.
 ///
-/// Painting over a cliff face is allowed only when the face drops one level into water, which is
-/// exactly the case that becomes a waterfall. Returns `(changed, fall tiles, warnings)`.
+/// Painting over a cliff face is allowed when that face drops exactly one level; it becomes a
+/// waterfall. Returns `(changed, fall tiles, warnings)`.
 pub fn paint_water(
     tiles: &mut [TerrainTile],
     w: usize,
@@ -817,7 +888,7 @@ pub fn paint_water(
     targets: &[(usize, usize)],
     paint: bool,
     sharp: bool,
-) -> crate::Result<(usize, usize, usize, usize)> {
+) -> crate::Result<(usize, usize, usize)> {
     if tiles.len() != w * h {
         return Err(crate::Error::Invalid(
             "terrain size does not match its grid".into(),
@@ -844,10 +915,10 @@ pub fn paint_water(
                 }
             }
         }
-        let straight_into_water = low.len() == 1 && low[0].elevation + 1 == e && is_water(low[0]);
-        if !straight_into_water {
+        let straight_drop = low.len() == 1 && low[0].elevation + 1 == e;
+        if !straight_drop {
             return Err(crate::Error::Invalid(format!(
-                "The cliff at {x},{y} does not drop one level into water. Lower it or paint the water below first."
+                "The cliff at {x},{y} does not drop exactly one level on one side. Change the height first."
             )));
         }
     }
@@ -886,7 +957,7 @@ pub fn paint_water(
         }
     }
 
-    let (falls, warnings, dry) = retile_water(&mut next, w, h, &mut affected, sharp)?;
+    let (falls, warnings) = retile_water(&mut next, w, h, &mut affected, sharp)?;
     if !paint {
         for &(x, y) in affected.iter() {
             retile_land_tile(&mut next, w, h, x, y, sharp)
@@ -895,7 +966,7 @@ pub fn paint_water(
     }
     let changed = count_changed(tiles, &next);
     tiles.copy_from_slice(&next);
-    Ok((changed, falls, warnings, dry))
+    Ok((changed, falls, warnings))
 }
 
 fn unsupported_cliff(x: usize, y: usize) -> String {
@@ -914,7 +985,7 @@ pub fn paint_height(
     targets: &[(usize, usize)],
     delta: i32,
     sharp: bool,
-) -> crate::Result<(usize, usize, usize, usize)> {
+) -> crate::Result<(usize, usize, usize)> {
     if tiles.len() != w * h {
         return Err(crate::Error::Invalid(
             "terrain size does not match its grid".into(),
@@ -959,11 +1030,11 @@ pub fn paint_height(
         retile_land_tile(&mut next, w, h, x, y, sharp)
             .map_err(|(x, y)| crate::Error::Invalid(unsupported_cliff(x, y)))?;
     }
-    let (falls, warnings, dry) = retile_water(&mut next, w, h, &mut affected, sharp)?;
+    let (falls, warnings) = retile_water(&mut next, w, h, &mut affected, sharp)?;
     check_steps(tiles, &next, w, h)?;
     let changed = count_changed(tiles, &next);
     tiles.copy_from_slice(&next);
-    Ok((changed, falls, warnings, dry))
+    Ok((changed, falls, warnings))
 }
 
 #[cfg(test)]
@@ -1016,7 +1087,7 @@ mod tests {
         h: usize,
         targets: &[(usize, usize)],
         delta: i32,
-    ) -> crate::Result<(usize, usize, usize, usize)> {
+    ) -> crate::Result<(usize, usize, usize)> {
         paint_height(tiles, w, h, targets, delta, false)
     }
 
@@ -1098,20 +1169,59 @@ mod tests {
     }
 
     #[test]
-    fn a_fall_without_water_behind_stays_a_river() {
+    fn a_recessed_fall_needs_no_water_behind_it() {
         let (w, h) = (4, 4);
         let mut tiles = vec![TerrainTile::default(); w * h];
-        // one row at e1 above a row of water at e0, and land at the same height behind it
-        for x in 0..w {
-            tiles[x * h].elevation = 1;
-            tiles[x * h + 1].elevation = 1;
-        }
-        paint_block(&mut tiles, w, h, 0, 1, w - 1, 2);
-        let targets: Vec<(usize, usize)> = (0..w).map(|x| (x, 1)).collect();
-        let (_, falls, _, dry) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
-        assert_eq!((falls, dry), (0, w));
-        for x in 0..w {
-            assert!(is_river(tiles[x * h + 1].model));
+        // a 4x2 plateau at e1 with land at e0 all around
+        let top: Vec<(usize, usize)> = (0..w).flat_map(|x| [(x, 0), (x, 1)]).collect();
+        paint(&mut tiles, w, h, &top, 1).unwrap();
+        // water on the two middle tiles of the south row: they drop south onto land
+        let targets = [(1usize, 1usize), (2, 1)];
+        let (_, falls, warnings) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        assert_eq!((falls, warnings), (2, 0));
+        // measured on the sample save: the counter-clockwise (east) end is 208, the other 308
+        assert_eq!(
+            (
+                tiles[h + 1].model,
+                tiles[h + 1].angle,
+                tiles[h + 1].elevation
+            ),
+            (terrain_model("Fall308"), 0, 1)
+        );
+        assert_eq!(
+            (tiles[2 * h + 1].model, tiles[2 * h + 1].angle),
+            (terrain_model("Fall208"), 0)
+        );
+    }
+
+    #[test]
+    fn an_east_cascade_uses_the_measured_models() {
+        let (w, h) = (6, 8);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        // a 4x8 terrace at e1 with a 2x6 tier at e2 on it, and land at e0 to the east
+        let terrace: Vec<(usize, usize)> =
+            (0..=3).flat_map(|x| (0..=7).map(move |y| (x, y))).collect();
+        let upper: Vec<(usize, usize)> =
+            (1..=2).flat_map(|x| (1..=6).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &terrace, 1).unwrap();
+        paint(&mut tiles, w, h, &upper, 1).unwrap();
+        // the lower strip first, then the upper one landing on it
+        let lower: Vec<(usize, usize)> = (2..=5).map(|y| (3, y)).collect();
+        let top: Vec<(usize, usize)> = (2..=5).map(|y| (2, y)).collect();
+        paint_water(&mut tiles, w, h, &lower, true, false).unwrap();
+        paint_water(&mut tiles, w, h, &top, true, false).unwrap();
+        let at = |x: usize, y: usize| tiles[x * h + y];
+        // upper strip: dry back, landing on the lower fall
+        assert_eq!(at(2, 2).model, terrain_model("Fall204"), "north end");
+        assert_eq!(at(2, 3).model, terrain_model("Fall408"), "middle");
+        assert_eq!(at(2, 5).model, terrain_model("Fall304"), "south end");
+        // lower strip: a fall above it, dropping onto land
+        assert_eq!(at(3, 2).model, terrain_model("Fall208"), "north end");
+        assert_eq!(at(3, 3).model, terrain_model("Fall422"), "2nd from north");
+        assert_eq!(at(3, 4).model, terrain_model("Fall403"), "middle");
+        assert_eq!(at(3, 5).model, terrain_model("Fall302"), "south end");
+        for (x, y) in lower.iter().chain(top.iter()) {
+            assert_eq!(at(*x, *y).angle, 1, "drops east at {x},{y}");
         }
     }
 
@@ -1357,20 +1467,21 @@ mod tests {
     }
 
     #[test]
-    fn water_over_a_cliff_needs_water_below() {
+    fn water_on_a_cliff_face_drops_onto_land() {
         let (w, h) = (6, 6);
         let mut tiles = vec![TerrainTile::default(); w * h];
         let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
         paint(&mut tiles, w, h, &top, 1).unwrap();
-        // water one level below the north face, and the river behind it on the plateau
+        // the river behind the north face on the plateau
         tiles[2 * h].model = terrain_model("River8A");
-        let before = tiles.clone();
         paint_water(&mut tiles, w, h, &[(2, 1), (2, 2)], true, false).unwrap();
         assert!(is_fall(tiles[2 * h + 1].model));
         assert_eq!(tiles[2 * h + 1].angle, 2); // drops north
-                                               // the south face has land below, so it cannot become water
-        tiles = before;
-        assert!(paint_water(&mut tiles, w, h, &[(2, 3)], true, false).is_err());
+                                               // the south face has land below: the fall is recessed into it
+        paint_water(&mut tiles, w, h, &[(2, 3)], true, false).unwrap();
+        let fall = tiles[2 * h + 3];
+        assert_eq!(fall.model, terrain_model("Fall101")); // one tile, no strip
+        assert_eq!((fall.angle, fall.elevation), (0, 1)); // drops south from the plateau
     }
 
     #[test]
@@ -1415,7 +1526,7 @@ mod tests {
         }
         paint_block(&mut tiles, w, h, 0, 1, w - 1, 2);
         // a model the autotiler never writes, as the shape fixer would set it
-        tiles[h + 1].model = terrain_model("Fall403");
+        tiles[h + 1].model = terrain_model("Fall205");
         let before = tiles.clone();
         // paint the river behind the strip: the whole strip is pulled in and re-tiled
         paint_block(&mut tiles, w, h, 0, 0, w - 1, 0);
@@ -1448,7 +1559,7 @@ mod tests {
         let before = tiles.clone();
         let targets: Vec<(usize, usize)> =
             (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
-        let (changed, falls, _, _) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        let (changed, falls, _) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
         assert_eq!((changed, falls), (0, 0));
         assert_eq!(tiles, before);
     }

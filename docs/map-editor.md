@@ -159,10 +159,11 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 ## Painting rivers, cliffs and waterfalls
 
 > **In-game status (2026-11-22).** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded
-> cliff *and* river corners, automatic waterfalls (including the water-behind source rule),
-> consecutive (cascade) falls, painted paths and ground designs, and moving buildings. Still
-> unverified: the river junction models the sample save never used (see Measured river table). **Back
-> up the save before terrain work.**
+> cliff *and* river corners, automatic waterfalls, consecutive (cascade) falls, painted paths and
+> ground designs, and moving buildings. Still **unverified**: the recessed fall that was wrongly
+> refused until 2026-11-21 (a fall with no river behind it and no pool below — this save's acre G6 is
+> the ground truth for it) and the river junction models the sample save never used (see Measured
+> river table). **Back up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
@@ -187,8 +188,8 @@ if every tile is supported, so a rejected stroke writes nothing.
   face if the tile is now at a plateau edge.
 - **Fix one tile / falls** stamps one model and angle for edges the autotiler refuses, and for
   waterfall models; also one undo entry. The list uses plain-language labels (see the tables below)
-  and any fall model other than `Fall200`/`Fall300`/`Fall400` is treated as hand-set: later water
-  strokes leave it alone.
+  and any fall model the autotiler never writes is treated as hand-set: later water strokes leave it
+  alone.
 
 ### Measured river table
 
@@ -253,45 +254,41 @@ A fall strip replaces the water tiles at the top edge of a one-level drop. The f
 **high** elevation and its angle is the drop direction: S 0, E 1, N 2, W 3 (north is inferred by
 rotation; the other three were measured). The strip is `Fall200` at the end 90° counter-clockwise
 from the drop, `Fall300` at the opposite end, `Fall400` in the middle; a one-tile strip is
-`Fall400`. For example, a south-dropping 4-wide fall is `300, 400, 400, 200` west to east.
+`Fall101`. For example, a south-dropping 4-wide fall is `300, 400, 400, 200` west to east.
 
-Only those three straight-fall models are generated automatically. A fall is only created when the
-tile **behind it** (opposite the drop) is river at the same height, or water one level up (the fall
-above in a cascade). Without a source the game leaves the back of the fall open and you see through
-it, so the tile stays a river and the toast counts it (`N water edges need water behind them`).
-A drop of more than one level is refused (add a one-tile terrace), and water that drops onto land
-is left as a river and counted in the warning toast. Automatic fall painting and the source rule
-were confirmed in game (2026-11-22).
+**A fall needs no water behind it and no pool below it.** A player creates a waterfall by standing
+on the plateau and painting water on the top edge: the water tile becomes the fall, the tile behind
+it stays dry grass or cliff, and the drop can end on dry land. The game then draws the fall recessed
+into the cliff face. Water behind the fall is the ordinary river case, not a requirement, and it was
+wrong to refuse the dry one.
 
-Consecutive falls (one fall landing on the next) are generated on every level, but with the basic
-`Fall200`/`Fall300`/`Fall400` models. The measured cascade variants are in the model list:
-`Fall204`/`Fall304`/`Fall408` for a closed back on top, and the `Fall2xx`/`Fall3xx` lower-strip
-models. Generated cascades were checked in game (2026-11-22) and look right with the basic models;
-the lower variants were only measured for east- and west-dropping falls, so they are optional polish
-stamped by hand, not a fix.
+The model follows what is behind and below the fall. All of these were measured on a dedicated test
+acre of a real 3.0.3 save (acre G6: four 2×4 pads with a 2-wide fall on each side, a 3×3 pad with a
+1×1 fall on each side, and a two-tier "cake" with 2-wide falls on every side of both tiers), plus
+the two-level gorge:
 
-The sample save's two-level gorge uses the other measured cascade models. All of them are in the
-model list and are treated as hand-set, so later water strokes leave them alone:
+| Behind the fall | Below the fall | Ends (CCW / CW) | Middle |
+|---|---|---|---|
+| river at the same height, or a fall one level up | water, or the fall below in a cascade | `Fall200` / `Fall300` | `Fall400` |
+| dry land or cliff at the same height (recessed) | dry land | `Fall208` / `Fall308` | `Fall400` (unmeasured) |
+| dry land or cliff at the same height | the fall below (cascade top) | `Fall204` / `Fall304` | `Fall408` |
+| a fall one level up (cascade bottom) | dry land | `Fall208` (east drop) / `Fall302`; `Fall202` (west drop) / `Fall308` | `Fall403`, with `Fall422` (east drop) or `Fall421` (west drop) second from the north end |
+| anything | a one-tile fall | `Fall101` | — |
 
-| Use | Model | Label in the Terrain panel |
-|---|---|---|
-| upper cascade, counter-clockwise end | `Fall204` | Cascade top, counter-clockwise end |
-| upper cascade, middle | `Fall408` | Cascade top, middle |
-| upper cascade, clockwise end | `Fall304` | Cascade top, clockwise end |
-| lower cascade, north end, east drop | `Fall208` | Cascade bottom, north end (east drop) |
-| lower cascade, 2nd from north, east drop | `Fall422` | Cascade bottom, 2nd from north (east drop) |
-| lower cascade, middle | `Fall403` | Cascade bottom, middle |
-| lower cascade, south end, east drop | `Fall302` | Cascade bottom, south end (east drop) |
-| lower cascade, north end, west drop | `Fall308` | Cascade bottom, north end (west drop) |
-| lower cascade, 2nd from north, west drop | `Fall421` | Cascade bottom, 2nd from north (west drop) |
-| lower cascade, south end, west drop | `Fall202` | Cascade bottom, south end (west drop) |
+Re-deriving every fall tile of the sample save from the rules above reproduces all 74 of them,
+model and angle, including both gorge tiers and every pad in the test acre. Contexts the save never
+showed (a north- or south-dropping cascade bottom, a recessed strip longer than two tiles, a dry
+back over a pool) fall back to the plain `Fall200`/`Fall300`/`Fall400` strip, which is verified in
+game, so those are the cases to look at first if a fall looks wrong.
 
-The lower-strip models encode the absolute direction as well as the strip position (208 and 202 are
-the same slot for opposite drops), so the labels name the measured orientation rather than a
-rule. Those placements come from one gorge. The game has no corner-fall models, so a fall on a
-corner is left as a river and counted in the warning toast, and a fall that would drop more than one
-level is refused (add a one-tile terrace). Cascades of three or more levels and the variants the
-gorge did not show are not measured: place those tiles by hand with the model list.
+A corner fall (water dropping in two directions at once) is not generated: there is no corner-fall
+model, so the tile stays a river and the toast counts it. A drop of more than one level is refused
+(add a one-tile terrace).
+
+Consecutive falls (one fall landing on the next) are generated on every level. The measured cascade
+variants are in the model list; the lower strip of a cascade keeps `Fall403` in its middle on every
+level.
+
 
 ### Rules that keep a save loadable
 
@@ -330,8 +327,8 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
 - Painting water within one tile of an existing multi-level waterfall fails the >1-level check
   (nothing is written). Paint away from it, or fix the tiles by hand.
 - A tile that is already a river bend keeps its rounded/sharp style when a later stroke re-tiles the
-  ring, so a hand-picked `River3C` survives. Hand-set fall models (anything other than
-  `Fall200`/`Fall300`/`Fall400`) and `Cliff3C` corners are kept the same way. Use **Fix one tile** to
+  ring, so a hand-picked `River3C` survives. Hand-set fall models (any model the autotiler never
+  writes, such as `Fall205`) and `Cliff3C` corners are kept the same way. Use **Fix one tile** to
   change a bend or a corner by hand.
 - A saddle (two low diagonals, no low side) or a strip with no connected same-height side is still
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
@@ -358,9 +355,18 @@ painting is checked against an emulator shape sheet: a 1×1 raise stays `Cliff0A
 1–3, a 2×1 stays `Cliff1A`, a 3×1 ridge stays `Cliff2A`, a 3×3 stays `3B`/`5B`/`Base`, and the only
 re-derive differences are angular `Cliff2C`/`Cliff3C` corners that the generator draws as rounded
 `3B`. In game (2026-11-22) single raises, multi-tile cliffs, heights 2–3, rivers, sharp/round cliff
-and river corners, automatic waterfalls with their source rule, consecutive falls, painted paths and
-ground designs, moved buildings and the tree/building warning all matched. No save data layout
-changed.
+and river corners, automatic waterfalls (the old water-behind source rule), consecutive falls,
+painted paths and ground designs, moved buildings and the tree/building warning all matched. No save
+data layout changed.
+
+Hot fix (2026-11-21): waterfalls no longer need water behind them or a pool below, and the fall
+model is chosen from what is behind and under the fall as measured on acre G6 of a fresh save (see
+Waterfalls). A generated single-tile fall is now `Fall101`, a recessed strip uses `Fall208`/`Fall308`
+and the cascade-top/bottom families use their measured models; unknown contexts keep the plain
+`Fall200`/`Fall300`/`Fall400` strip. The `dry` count left the `paint_water`/`paint_height` return and
+`TerrainPaintResult`; the toast now only reports corner drops. The dry rule was checked by
+re-deriving every fall tile of the save: 74 of 74 match the game byte for byte. **In game it is not
+verified yet.**
 
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house

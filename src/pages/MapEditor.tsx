@@ -49,18 +49,19 @@ const TERRAIN_SHAPES: [name: string, label: string][] = [
   ["Cliff5B", "Straight cliff edge"],
   ["Cliff7A", "Cliff edge with a sunken diagonal"],
   ["Cliff8", "Flat top, no edges"],
+  ["Fall101", "Fall, one tile alone (no strip)"],
   ["Fall200", "Fall strip end, counter-clockwise side"],
   ["Fall300", "Fall strip end, clockwise side"],
-  ["Fall400", "Fall strip middle, or a one-tile fall"],
+  ["Fall400", "Fall strip middle"],
   ["Fall204", "Cascade top, counter-clockwise end"],
   ["Fall304", "Cascade top, clockwise end"],
   ["Fall408", "Cascade top, middle"],
-  ["Fall208", "Cascade bottom, north end (east drop)"],
+  ["Fall208", "Recessed fall end, counter-clockwise side"],
+  ["Fall308", "Recessed fall end, clockwise side"],
   ["Fall302", "Cascade bottom, south end (east drop)"],
-  ["Fall422", "Cascade bottom, 2nd from north (east drop)"],
-  ["Fall403", "Cascade bottom, middle"],
-  ["Fall308", "Cascade bottom, north end (west drop)"],
   ["Fall202", "Cascade bottom, south end (west drop)"],
+  ["Fall403", "Cascade bottom, middle"],
+  ["Fall422", "Cascade bottom, 2nd from north (east drop)"],
   ["Fall421", "Cascade bottom, 2nd from north (west drop)"],
 ];
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
@@ -705,8 +706,7 @@ export default function MapEditor() {
       ].filter(Boolean).join(" and ");
       const notes = [
         near && `${near} within one terrain tile. The game normally keeps these away from cliffs and rivers.`,
-        res.dry && `${res.dry} water edge${res.dry === 1 ? "" : "s"} need water behind ${res.dry === 1 ? "it" : "them"} for a waterfall.`,
-        res.warnings && `${res.warnings} water edge${res.warnings === 1 ? "" : "s"} need water one level below for a waterfall.`,
+        res.warnings && `${res.warnings} water edge${res.warnings === 1 ? "" : "s"} at a corner, where the game has no waterfall model, so ${res.warnings === 1 ? "it" : "they"} stayed a river.`,
       ].filter(Boolean).join(" ");
       const title = res.changed
         ? `${res.changed} terrain tile${res.changed === 1 ? "" : "s"} changed${res.falls ? `, ${res.falls} waterfall tile${res.falls === 1 ? "" : "s"}` : ""}`
@@ -1148,11 +1148,11 @@ export default function MapEditor() {
             </div>
           ) : <div className="tiny faint">The terrain model table is not available.</div>}
           <div className="tiny faint">
-            {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall when it sits one level above water with river behind it at the same height; paint those first. Water clears ground designs.</>
+            {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall where it sits one level above anything lower. No river behind the fall is needed: the game draws a recessed fall into the cliff face. Water clears ground designs.</>
               : tbrush?.kind === "water-erase" ? <>Drag to erase rivers. The tile becomes grass at the same height; cliff faces next to it are restored.</>
               : tbrush?.kind === "cliff" ? <>Drag to {tbrush.delta > 0 ? "raise" : "lower"} land. Faces are generated automatically for single tiles, strips, ridges and whole plateaus; increase the brush for larger areas. Water has to be erased first. New corners use the <b>{sharp ? "sharp" : "rounded"}</b> style; corners that already exist keep theirs.</>
               : tbrush?.kind === "shape" ? <>Click one tile to set that exact model and rotation. Use it for edges the autotiler refuses and for waterfall models; hand-set falls are kept by later water strokes.</>
-              : <>Cliffs and rivers change the terrain model itself. Paths and designs are separate. Waterfalls are generated where a river drops one level onto water; the north-facing case is inferred.</>}
+              : <>Cliffs and rivers change the terrain model itself. Paths and designs are separate. Waterfalls are generated wherever water drops one level in one of the four directions; the fall's strip ends and end caps follow the shapes measured in game.</>}
           </div>
         </div>
         <div className="divider" />

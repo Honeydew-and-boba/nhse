@@ -132,8 +132,12 @@ two jobs race to create the release. It has not been run yet.
   generated faces and rounded/sharp corners, straight one-level and consecutive falls, the 0–3 limit,
   the two-level-step refusal, the tree/building warning and semi-manual fall models; see
   `docs/map-editor.md`. Verified in game (2026-11-22): cliffs, heights, rivers, sharp/round cliff and
-  river corners, automatic waterfalls with the water-behind source rule, consecutive falls and the
-  tree/building warning. Corner falls do not exist in the game, and a fall dropping more than one
+  river corners, consecutive falls and the tree/building warning. Waterfalls were re-done on
+  2026-11-21 (hot fix): a fall needs **no water behind it and no pool below** — the player paints
+  water on a plateau edge and the game draws the fall recessed into the cliff face — and the fall
+  model now follows the measured table for recessed strips, cascade tops/bottoms and single-tile
+  falls (`Fall101`). That re-derives all 74 fall tiles of the sample save exactly, but it is **not
+  verified in game yet**. Corner falls do not exist in the game, and a fall dropping more than one
   level is refused unless a terrace buffers it. Open: the unmeasured river nub/junction shapes
   (`4A`, `4B`, `5A`, `6A`, `6B`, `4C`), which the generator fills as open water, and the unmeasured
   `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants. **Back up the save before terrain work.**
