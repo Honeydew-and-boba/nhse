@@ -2,6 +2,7 @@ import { Circle, Disc, Download, Droplet, Eraser, FileDown, FileUp, Heart, Image
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, Check, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
 import { api, type DesignKind, type DesignPixels } from "../lib/api";
+import { gameColor, gameIndex, HUE_COLORS, VIVID_COUNT, BRIGHT_COUNT } from "../lib/designColors";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { asset } from "../lib/items";
 import * as shapes from "../lib/shapes";
@@ -65,11 +66,32 @@ const clampCell = ([x, y]: Point): Point => [Math.min(31, Math.max(0, x)), Math.
 // The mirror axis runs between columns 15 and 16, as in the game.
 const mirrorCol = (k: number) => k - (k % 32) + 31 - (k % 32);
 
+// One strip per game channel. Each cell is the colour that step actually produces,
+// so the strips show the game's own steps rather than a CSS gradient.
+function Strip({ label, round, colors, at, onPick }: { label: string; round?: boolean; colors: string[]; at?: number; onPick: (i: number) => void }) {
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "center" }}>
+      <span className="small muted" style={{ width: 60 }}>{label}</span>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(15, 20px)", gap: 3 }}>
+        {colors.map((c, i) => (
+          <button key={i} aria-label={`${label} ${i + 1}`} title={`${label} ${i + 1} · ${c.toUpperCase()}`} onClick={() => onPick(i)}
+            style={{ width: 20, height: 20, padding: 0, background: c, borderRadius: round ? "50%" : 6,
+              border: i === at ? "2px solid var(--accent)" : "1px solid var(--border-strong)",
+              boxShadow: i === at ? "0 0 0 2px var(--accent-soft)" : undefined }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind; index: number; ext: string; onClose: () => void; onSaved: () => void }) {
   const { toast } = useStore();
   const [d, setD] = useState<DesignPixels | null>(null);
   const [sheet, setSheet] = useState(0);
   const [color, setColor] = useState(0);
+  // Game indices behind the selected slot's colour. Remembered per slot so a colour
+  // that repeats across hues (the near-gray steps) keeps the markers where the user put them.
+  const [bars, setBars] = useState<{ slot: number; at: [number, number, number] } | null>(null);
   const [tool, setTool] = useState<Tool>("pencil");
   const [stampSize, setStampSize] = useState(1);
   const [brushSize, setBrushSize] = useState(0);
@@ -299,6 +321,19 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     setDirty(false); onSaved(); toast("ok", "Design saved");
   };
   const hexc = (c: number[]) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+  const paletteHex = color < 15 ? hexc(d.palette[color]) : "";
+  // Markers survive a pick, but not a palette change from elsewhere (import, custom picker).
+  const game = (bars?.slot === color && gameColor(...bars.at) === paletteHex ? bars.at : null) ?? gameIndex(paletteHex);
+  const at = game ?? ([0, 7, 7] as [number, number, number]);
+  const setBar = (channel: 0 | 1 | 2, i: number) => {
+    const next: [number, number, number] = [at[0], at[1], at[2]];
+    next[channel] = i;
+    const hex = gameColor(...next);
+    const pal = d.palette.slice();
+    pal[color] = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16)) as [number, number, number];
+    setBars({ slot: color, at: next });
+    commit({ ...d, palette: pal });
+  };
   return (
     <Modal title={d.info.name || `Design ${index + 1}`} size="wide" onClose={onClose} icon={<Palette size={18} />} footer={<>
       <MenuButton label="Import / export" items={[
@@ -360,7 +395,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
                 { value: 0, label: "S" }, { value: 1, label: "M" }, { value: 2, label: "L" }]} />
             </Field>
           )}
-          <Field label={<><Droplet size={13} /> Palette</>} hint="Click to select · double-click the swatch below to change its color">
+          <Field label={<><Droplet size={13} /> Palette</>} hint="Click to select · edit the selected color below">
             <div className="row" style={{ gap: 6, alignItems: "center" }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 36px)", gap: 6 }}>
                 {d.palette.map((c, i) => (
@@ -372,9 +407,18 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
                 style={{ width: 36, height: 36, borderRadius: 9, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: color === 15 ? "3px solid var(--accent)" : "1px solid var(--border-strong)", boxShadow: color === 15 ? "0 0 0 3px var(--accent-soft)" : undefined }} />
             </div>
           </Field>
+          {color < 15 && (
+            <Field label={<><Droplet size={13} /> Game color</>} hint="Hue · vividness · brightness, as in the design editor">
+              <div className="col" style={{ gap: 3 }}>
+                <Strip label="Hue" round colors={HUE_COLORS} at={game?.[0]} onPick={(i) => setBar(0, i)} />
+                <Strip label="Vividness" colors={Array.from({ length: VIVID_COUNT }, (_, i) => gameColor(at[0], i, at[2]))} at={game?.[1]} onPick={(i) => setBar(1, i)} />
+                <Strip label="Brightness" colors={Array.from({ length: BRIGHT_COUNT }, (_, i) => gameColor(at[0], at[1], i))} at={game?.[2]} onPick={(i) => setBar(2, i)} />
+              </div>
+            </Field>
+          )}
           <div className="row">
             {color < 15 ? (
-              <input type="color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
+              <input type="color" title="Custom color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
                 onChange={(e) => {
                   const v = e.target.value; const rgb: [number, number, number] = [1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16)) as [number, number, number];
                   const pal = d.palette.slice(); pal[color] = rgb; commit({ ...d, palette: pal });

@@ -151,7 +151,8 @@ painting). Local `master` tracks `origin/master`; `windows-build`, `design-patte
 `map-editor-qol` were merged and deleted locally and on `origin`.
 
 `design-shape-tools` is the open branch for the design editor (shape tools, Fill all, brush sizes,
-pixel-grid overlay, left/right mirror, canvas rotate and wrap-drag). It is pushed to `origin` with no
+pixel-grid overlay, left/right mirror, canvas rotate and wrap-drag, and the game's
+hue/vividness/brightness colour picker — see `docs/designs.md`). It is pushed to `origin` with no
 PR yet; `master` does not have it.
 
 On 2026-11-21 the waterfall hot fix (three commits: recessed falls and the measured model table, the
