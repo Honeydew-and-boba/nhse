@@ -57,9 +57,15 @@ alone for the island flag slot.
 
 ## Editor behaviour
 
-- Tools: Draw, Fill, Pick, Erase. Transparency is selectable as a colour (checkerboard swatch to
-  the right of the palette), so Draw and Fill can paint empty space; Pick selects it from an empty
-  pixel.
+- Tools: Draw (1×1 / 2×2 / 3×3 brush), Fill (flood the clicked area), Fill all (the whole sheet, one
+  undo step), Pick and Erase, plus shapes — Line, Rect and Ellipse (1 px outlines), and the filled
+  stamps Circle, Star and Heart in three sizes. Shapes are previewed while dragging and
+  written as one undo step on release; the ellipse is inscribed in the dragged box, so a non-square
+  drag gives an ellipse and a square drag a circle. The stamps follow the cursor while dragging and
+  are centred on the release pixel. Stamp radii are 2 / 5 / 16 px (in-game diameters 4 / 10 / 36;
+  the large stamp is capped at the 32 px sheet). Rasterizers live in `src/lib/shapes.ts`.
+- Transparency is selectable as a colour (checkerboard swatch to the right of the palette), so Draw,
+  Fill and the shape tools can paint empty space; Pick selects it from an empty pixel.
 - Undo/redo: `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`. History is pixel-only, one step per
   stroke, 64 steps, and resets whenever a design is reloaded or imported. Shortcuts are ignored
   while a text input has focus.
