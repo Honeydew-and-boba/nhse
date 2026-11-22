@@ -66,6 +66,13 @@ alone for the island flag slot.
   the large stamp is capped at the 32 px sheet). Rasterizers live in `src/lib/shapes.ts`.
 - Transparency is selectable as a colour (checkerboard swatch to the right of the palette), so Draw,
   Fill and the shape tools can paint empty space; Pick selects it from an empty pixel.
+- Grid (on by default): a thin line on every pixel boundary, drawn as a CSS overlay on the 448 px
+  canvas. View only, never written to the save.
+- Mirror (off by default): every painting tool also paints the mirrored column, `x → 31−x`, so the
+  axis sits between columns 15 and 16. Applies to Draw, Erase, Fill (each seed floods its own area),
+  Fill All, Line, Rect, Ellipse and the stamps, and the shape preview shows the mirrored result while
+  dragging. The game's guide cross also has a horizontal line, but only left↔right is mirrored here.
+  Both toggles are per editor session and reset when the editor closes.
 - Undo/redo: `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`. History is pixel-only, one step per
   stroke, 64 steps, and resets whenever a design is reloaded or imported. Shortcuts are ignored
   while a text input has focus.

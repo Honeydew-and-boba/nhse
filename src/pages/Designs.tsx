@@ -1,6 +1,6 @@
 import { Circle, Disc, Download, Droplet, Eraser, FileDown, FileUp, Heart, ImageDown, ImageUp, PaintBucket, PaintRoller, Palette, Pencil, Pipette, Slash, Square, Star, UserCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Button, Card, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
+import { Button, Card, Check, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
 import { api, type DesignKind, type DesignPixels } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { asset } from "../lib/items";
@@ -62,6 +62,8 @@ type Tool = "pencil" | "fill" | "fill-all" | "pick" | "erase" | "line" | "rect" 
 const isStamp = (t: Tool): t is Stamp => t === "circle" || t === "star" || t === "heart";
 const isShape = (t: Tool) => t === "line" || t === "rect" || t === "ellipse" || isStamp(t);
 const clampCell = ([x, y]: Point): Point => [Math.min(31, Math.max(0, x)), Math.min(31, Math.max(0, y))];
+// The mirror axis runs between columns 15 and 16, as in the game.
+const mirrorCol = (k: number) => k - (k % 32) + 31 - (k % 32);
 
 function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind; index: number; ext: string; onClose: () => void; onSaved: () => void }) {
   const { toast } = useStore();
@@ -72,6 +74,8 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   const [stampSize, setStampSize] = useState(1);
   const [brushSize, setBrushSize] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [grid, setGrid] = useState(true);
+  const [mirror, setMirror] = useState(false);
   const [preview, setPreview] = useState<number[] | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const painting = useRef(false);
@@ -146,6 +150,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
         : tool === "ellipse" ? shapes.ellipse(a, b)
           : isStamp(tool) ? shapes.stamp(tool, b, STAMP_RADII[stampSize])
             : [];
+  const withMirror = (ids: number[]): number[] => mirror ? [...new Set(ids.flatMap((k) => [k, mirrorCol(k)]))] : ids;
   const apply = (x: number, y: number) => {
     if (x < 0 || y < 0 || x > 31 || y > 31) return;
     const base = sheet * 1024;
@@ -153,41 +158,52 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     const i = base + y * 32 + x;
     if (tool === "pick") { setColor(px[i]); setTool("pencil"); return; }
     const v = tool === "erase" ? 15 : color;
+    let changed = false;
+    // With Mirror on, every painted cell also paints its mirror column.
+    const paint = (k: number) => {
+      for (const m of mirror ? [k, mirrorCol(k)] : [k]) {
+        if (px[base + m] === v) continue;
+        px[base + m] = v;
+        changed = true;
+      }
+    };
     if (tool === "fill-all") {
       if (px.slice(base, base + 1024).every((p) => p === v)) return;
-      remember();
       px.fill(v, base, base + 1024);
+      changed = true;
     } else if (tool === "fill") {
-      const target = px[i];
-      if (target === v) return;
-      remember();
-      const stack = [[x, y]];
-      while (stack.length) {
-        const [cx, cy] = stack.pop()!;
-        if (cx < 0 || cy < 0 || cx > 31 || cy > 31) continue;
-        const k = base + cy * 32 + cx;
-        if (px[k] !== target) continue;
-        px[k] = v;
-        stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+      const flood = (sx: number, sy: number, target: number) => {
+        const stack = [[sx, sy]];
+        while (stack.length) {
+          const [cx, cy] = stack.pop()!;
+          if (cx < 0 || cy < 0 || cx > 31 || cy > 31) continue;
+          const k = base + cy * 32 + cx;
+          if (px[k] !== target) continue;
+          px[k] = v;
+          changed = true;
+          stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+        }
+      };
+      if (px[i] !== v) flood(x, y, px[i]);
+      // The mirrored seed fills on its own, so two separate areas both fill.
+      if (mirror) {
+        const mx = 31 - x, target = px[base + y * 32 + mx];
+        if (target !== v) flood(mx, y, target);
       }
     } else {
       // Draw uses a square brush; even sizes grow right and down from the cursor.
       const n = tool === "pencil" ? BRUSHES[brushSize] : 1;
       const o = (n - 1) >> 1;
-      let changed = false;
       for (let dy = 0; dy < n; dy++) {
         for (let dx = 0; dx < n; dx++) {
           const bx = x + dx - o, by = y + dy - o;
           if (bx < 0 || by < 0 || bx > 31 || by > 31) continue;
-          const k = base + by * 32 + bx;
-          if (px[k] === v) continue;
-          px[k] = v;
-          changed = true;
+          paint(by * 32 + bx);
         }
       }
-      if (!changed) return;
-      remember();
     }
+    if (!changed) return;
+    remember();
     setD({ ...d, pixels: px }); setDirty(true);
   };
   // A shape is previewed while dragging, then written as one undo step on release.
@@ -199,7 +215,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     const base = sheet * 1024;
     const px = d.pixels.slice();
     let changed = false;
-    for (const i of shapePixels(g.a, g.b)) {
+    for (const i of withMirror(shapePixels(g.a, g.b))) {
       if (px[base + i] !== color) { px[base + i] = color; changed = true; }
     }
     if (!changed) return;
@@ -215,7 +231,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     if (isShape(tool)) {
       const at = clampCell(p);
       drag.current = { a: at, b: at };
-      setPreview(shapePixels(at, at));
+      setPreview(withMirror(shapePixels(at, at)));
       return;
     }
     painting.current = true;
@@ -224,7 +240,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (drag.current) {
       drag.current.b = clampCell(pos(e));
-      setPreview(shapePixels(drag.current.a, drag.current.b));
+      setPreview(withMirror(shapePixels(drag.current.a, drag.current.b)));
     } else if (painting.current && (tool === "pencil" || tool === "erase")) apply(...pos(e));
   };
   const up = () => {
@@ -257,8 +273,19 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
       <div className="grid" style={{ gridTemplateColumns: "auto 1fr", gap: 20, alignItems: "start" }}>
         <div className="col" style={{ gap: 10 }}>
           {sheets > 1 && <Segmented value={sheet} onChange={setSheet} options={SHEETS.map((l, i) => ({ value: i, label: l }))} />}
-          <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", cursor: "crosshair" }}
-            onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} />
+          <div style={{ position: "relative", width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", boxSizing: "content-box" }}>
+            <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: "100%", height: "100%", display: "block", borderRadius: 12, cursor: "crosshair" }}
+              onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} />
+            {grid && <div aria-hidden style={{
+              position: "absolute", inset: 0, borderRadius: 12, pointerEvents: "none",
+              backgroundImage: "linear-gradient(to right, rgba(0,0,0,0.22) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.22) 1px, transparent 1px)",
+              backgroundSize: "3.125% 3.125%",
+            }} />}
+          </div>
+          <div className="row" style={{ gap: 14 }}>
+            <Check checked={grid} onChange={setGrid} label="Grid" title="Show the boundary of every pixel" />
+            <Check checked={mirror} onChange={setMirror} label="Mirror" title="Also paint the mirrored column" />
+          </div>
         </div>
         <div className="col" style={{ gap: 14 }}>
           <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { setD({ ...d, info: { ...d.info, name: v } }); setDirty(true); }} /></Field>
