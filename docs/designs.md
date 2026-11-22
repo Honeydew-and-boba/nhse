@@ -73,9 +73,19 @@ alone for the island flag slot.
   Fill All, Line, Rect, Ellipse and the stamps, and the shape preview shows the mirrored result while
   dragging. The game's guide cross also has a horizontal line, but only left↔right is mirrored here.
   Both toggles are per editor session and reset when the editor closes.
+- Whole-sheet edits act on the visible sheet only (PRO sheets stay independent), as in game:
+  - Rotate: the two buttons beside Grid/Mirror turn the sheet 90° counter-clockwise / clockwise
+    (the game's ZL/ZR). The 32×32 square wraps, so nothing is lost; each press is one undo step.
+  - Move: the Move tool drags the whole sheet by whole pixels. Content that leaves one edge
+    reappears on the opposite edge while dragging, so a drag of one row up moves the top row to
+    the bottom. Offsets are recomputed from the sheet captured at pointer-down, so the drag never
+    compounds rounding; the whole drag is one undo step. Grid and Mirror do not apply.
 - Undo/redo: `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`. History is pixel-only, one step per
   stroke, 64 steps, and resets whenever a design is reloaded or imported. Shortcuts are ignored
   while a text input has focus.
+- Save design is enabled only while the design differs from what was loaded or last saved (name,
+  palette or pixels). Undoing every stroke, rotating four times or dragging the canvas back leaves
+  it disabled, so an unchanged design is never rewritten.
 - PNG: import samples 32×32 (64×64 for PRO, a 2×2 grid of sheets), quantizes to 15 colours
   (median cut + k-means, nearest-colour mapping) and treats alpha < 128 as transparent. Export
   renders RGBA and scales by an integer factor (PRO is written as a 2×2 sheet grid).

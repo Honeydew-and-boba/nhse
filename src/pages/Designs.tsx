@@ -1,4 +1,4 @@
-import { Circle, Disc, Download, Droplet, Eraser, FileDown, FileUp, Heart, ImageDown, ImageUp, PaintBucket, PaintRoller, Palette, Pencil, Pipette, Slash, Square, Star, UserCheck } from "lucide-react";
+import { Circle, Disc, Download, Droplet, Eraser, FileDown, FileUp, Heart, ImageDown, ImageUp, Move, PaintBucket, PaintRoller, Palette, Pencil, Pipette, RotateCcw, RotateCw, Slash, Square, Star, UserCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, Check, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
 import { api, type DesignKind, type DesignPixels } from "../lib/api";
@@ -58,7 +58,7 @@ export default function Designs() {
   );
 }
 
-type Tool = "pencil" | "fill" | "fill-all" | "pick" | "erase" | "line" | "rect" | "ellipse" | Stamp;
+type Tool = "pencil" | "fill" | "fill-all" | "pick" | "erase" | "line" | "rect" | "ellipse" | Stamp | "move";
 const isStamp = (t: Tool): t is Stamp => t === "circle" || t === "star" || t === "heart";
 const isShape = (t: Tool) => t === "line" || t === "rect" || t === "ellipse" || isStamp(t);
 const clampCell = ([x, y]: Point): Point => [Math.min(31, Math.max(0, x)), Math.min(31, Math.max(0, y))];
@@ -83,8 +83,16 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   const drag = useRef<{ a: Point; b: Point } | null>(null);
   // Whole-array snapshots; `d.pixels` is never mutated in place.
   const hist = useRef<{ past: number[][]; future: number[][] }>({ past: [], future: [] });
+  // Move tool: the sheet as it was when the drag started, plus the last applied
+  // offset, so every move recomputes from that snapshot instead of compounding.
+  const pan = useRef<{ start: Point; base: number[]; dx: number; dy: number } | null>(null);
+  // The design as loaded or last saved. "Dirty" means "differs from this", so a
+  // no-op edit (undoing every stroke, rotating four times, dragging back) leaves
+  // Save disabled instead of offering to rewrite an unchanged design.
+  const clean = useRef<DesignPixels | null>(null);
   const load = () => api.designPixels(kind, index).then((x) => {
     setD(x);
+    clean.current = x;
     setDirty(false);
     hist.current = { past: [], future: [] };
   });
@@ -119,26 +127,33 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   }, [d]);
 
   if (!d) return null;
+  const commit = (next: DesignPixels) => {
+    const c = clean.current!;
+    setD(next);
+    setDirty(next.info.name !== c.info.name || JSON.stringify(next.palette) !== JSON.stringify(c.palette)
+      || next.pixels.length !== c.pixels.length || next.pixels.some((p, i) => p !== c.pixels[i]));
+  };
+  const pushHist = (pixels: number[]) => {
+    hist.current.past.push(pixels);
+    if (hist.current.past.length > 64) hist.current.past.shift();
+    hist.current.future = [];
+  };
   const remember = () => {
     if (stroke.current) return;
     stroke.current = true;
-    hist.current.past.push(d.pixels);
-    if (hist.current.past.length > 64) hist.current.past.shift();
-    hist.current.future = [];
+    pushHist(d.pixels);
   };
   const undo = () => {
     const prev = hist.current.past.pop();
     if (!prev) return;
     hist.current.future.unshift(d.pixels);
-    setD({ ...d, pixels: prev });
-    setDirty(true);
+    commit({ ...d, pixels: prev });
   };
   const redo = () => {
     const next = hist.current.future.shift();
     if (!next) return;
     hist.current.past.push(d.pixels);
-    setD({ ...d, pixels: next });
-    setDirty(true);
+    commit({ ...d, pixels: next });
   };
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -204,7 +219,27 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     }
     if (!changed) return;
     remember();
-    setD({ ...d, pixels: px }); setDirty(true);
+    commit({ ...d, pixels: px });
+  };
+  // Whole-sheet edits touch only the visible sheet, as in game, and each gesture
+  // is one undo step. `snapshot` is the pixel array from before the gesture.
+  const writeSheet = (next: number[], snapshot: number[]) => {
+    const px = d.pixels.slice();
+    px.splice(sheet * 1024, 1024, ...next);
+    if (!stroke.current) { stroke.current = true; pushHist(snapshot); }
+    commit({ ...d, pixels: px });
+  };
+  const turn = (cw: boolean) => {
+    stroke.current = false;
+    writeSheet(shapes.rotate(d.pixels.slice(sheet * 1024, sheet * 1024 + 1024), cw), d.pixels);
+  };
+  const panTo = (p: Point) => {
+    const g = pan.current;
+    if (!g) return;
+    const dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+    if (dx === g.dx && dy === g.dy) return;
+    g.dx = dx; g.dy = dy;
+    writeSheet(shapes.shift(g.base.slice(sheet * 1024, sheet * 1024 + 1024), dx, dy), g.base);
   };
   // A shape is previewed while dragging, then written as one undo step on release.
   const finishShape = () => {
@@ -220,14 +255,17 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     }
     if (!changed) return;
     remember();
-    setD({ ...d, pixels: px });
-    setDirty(true);
+    commit({ ...d, pixels: px });
   };
   const down = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     stroke.current = false;
     const p = pos(e);
+    if (tool === "move") {
+      pan.current = { start: p, base: d.pixels, dx: 0, dy: 0 };
+      return;
+    }
     if (isShape(tool)) {
       const at = clampCell(p);
       drag.current = { a: at, b: at };
@@ -238,22 +276,26 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     apply(p[0], p[1]);
   };
   const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (drag.current) {
+    if (pan.current) panTo(pos(e));
+    else if (drag.current) {
       drag.current.b = clampCell(pos(e));
       setPreview(withMirror(shapePixels(drag.current.a, drag.current.b)));
     } else if (painting.current && (tool === "pencil" || tool === "erase")) apply(...pos(e));
   };
   const up = () => {
     if (drag.current) finishShape();
+    pan.current = null;
     painting.current = false;
   };
   const cancel = () => {
     drag.current = null;
+    pan.current = null;
     setPreview(null);
     painting.current = false;
   };
   const save = async () => {
     await api.setDesignPixels(kind, index, d.info.name, d.palette, d.pixels);
+    clean.current = d;
     setDirty(false); onSaved(); toast("ok", "Design saved");
   };
   const hexc = (c: number[]) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -274,7 +316,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
         <div className="col" style={{ gap: 10 }}>
           {sheets > 1 && <Segmented value={sheet} onChange={setSheet} options={SHEETS.map((l, i) => ({ value: i, label: l }))} />}
           <div style={{ position: "relative", width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", boxSizing: "content-box" }}>
-            <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: "100%", height: "100%", display: "block", borderRadius: 12, cursor: "crosshair" }}
+            <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: "100%", height: "100%", display: "block", borderRadius: 12, cursor: tool === "move" ? "grab" : "crosshair" }}
               onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} />
             {grid && <div aria-hidden style={{
               position: "absolute", inset: 0, borderRadius: 12, pointerEvents: "none",
@@ -285,10 +327,13 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
           <div className="row" style={{ gap: 14 }}>
             <Check checked={grid} onChange={setGrid} label="Grid" title="Show the boundary of every pixel" />
             <Check checked={mirror} onChange={setMirror} label="Mirror" title="Also paint the mirrored column" />
+            <span className="spacer" />
+            <Button size="sm" icon={<RotateCcw />} title="Rotate this sheet 90° counter-clockwise" onClick={() => turn(false)}>Rotate</Button>
+            <Button size="sm" icon={<RotateCw />} title="Rotate this sheet 90° clockwise" onClick={() => turn(true)} />
           </div>
         </div>
         <div className="col" style={{ gap: 14 }}>
-          <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { setD({ ...d, info: { ...d.info, name: v } }); setDirty(true); }} /></Field>
+          <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { commit({ ...d, info: { ...d.info, name: v } }); }} /></Field>
           <Field label="Tool" hint={`${MOD}+Z undo · ${MOD}+Shift+Z redo`}>
             <div className="col" style={{ gap: 8 }}>
               <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
@@ -297,7 +342,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
                 { value: "erase", label: "Erase", icon: <Eraser /> }]} />
               <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
                 { value: "line", label: "Line", icon: <Slash /> }, { value: "rect", label: "Rect", icon: <Square /> },
-                { value: "ellipse", label: "Ellipse", icon: <Circle /> }]} />
+                { value: "ellipse", label: "Ellipse", icon: <Circle /> }, { value: "move", label: "Move", icon: <Move /> }]} />
               <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
                 { value: "circle", label: "Circle", icon: <Disc /> }, { value: "star", label: "Star", icon: <Star /> },
                 { value: "heart", label: "Heart", icon: <Heart /> }]} />
@@ -332,7 +377,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
               <input type="color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
                 onChange={(e) => {
                   const v = e.target.value; const rgb: [number, number, number] = [1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16)) as [number, number, number];
-                  const pal = d.palette.slice(); pal[color] = rgb; setD({ ...d, palette: pal }); setDirty(true);
+                  const pal = d.palette.slice(); pal[color] = rgb; commit({ ...d, palette: pal });
                 }} />
             ) : (
               <span style={{ width: 48, height: 32, borderRadius: 6, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: "1px solid var(--border-strong)" }} />

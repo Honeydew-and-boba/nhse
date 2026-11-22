@@ -69,6 +69,32 @@ export function ellipse(a: Point, b: Point): number[] {
   return [...out];
 }
 
+/** Rotate a 32×32 sheet by 90°; `cw` turns it clockwise on screen. */
+export function rotate(sheet: number[], cw: boolean): number[] {
+  const out: number[] = new Array(W * W);
+  for (let y = 0; y < W; y++) {
+    for (let x = 0; x < W; x++) {
+      // Clockwise sends (x, y) to (31 − y, x).
+      out[cw ? index(W - 1 - y, x) : index(y, W - 1 - x)] = sheet[index(x, y)];
+    }
+  }
+  return out;
+}
+
+/** Shift a 32×32 sheet by whole pixels, wrapping whatever leaves an edge to the opposite one. */
+export function shift(sheet: number[], dx: number, dy: number): number[] {
+  const out: number[] = new Array(W * W);
+  // Double modulo: JS keeps the sign of the dividend, so a large negative drag
+  // would otherwise index before the array.
+  const wrap = (v: number) => ((v % W) + W) % W;
+  for (let y = 0; y < W; y++) {
+    for (let x = 0; x < W; x++) {
+      out[index(wrap(x + dx), wrap(y + dy))] = sheet[index(x, y)];
+    }
+  }
+  return out;
+}
+
 /** Filled stamp of the given radius centred on `centre`. */
 export function stamp(kind: Stamp, centre: Point, radius: number): number[] {
   if (kind === "circle") return disc(centre, radius);
