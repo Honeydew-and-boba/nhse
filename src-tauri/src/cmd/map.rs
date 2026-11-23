@@ -57,17 +57,19 @@ pub fn set_terrain(state: State<AppState>, request: Request) -> CmdResult<()> {
 }
 
 /// Paints or clears the road layer (default paths) on terrain tiles. `family` is a
-/// `road_family` name (`soil`, `stone`, …); leave it out to clear.
+/// `road_family` name (`soil`, `stone`, …); leave it out to clear. `sharp` styles the bends the
+/// stroke creates; a bend it does not touch keeps its rounded/sharp style.
 #[tauri::command]
 pub fn paint_road(
     state: State<AppState>,
     tiles: Vec<[usize; 2]>,
     family: Option<String>,
+    sharp: bool,
 ) -> CmdResult<usize> {
     with_save_mut!(state, |s| {
         let mut t = s.terrain();
         let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
-        let n = paint::paint_road(&mut t, TILES_W, TILES_H, &targets, family.as_deref());
+        let n = paint::paint_road(&mut t, TILES_W, TILES_H, &targets, family.as_deref(), sharp);
         if n > 0 {
             s.set_terrain(&t);
         }

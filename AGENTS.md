@@ -126,8 +126,13 @@ two jobs race to create the release. It has not been run yet.
   unknown value and keep the magenta marker. Notes in `docs/map-editor.md`.
 - **Map editor: path painting**: the Item panel's Ground section paints the eight default path
   families with 8-way autotiling (`crates/nhse-core/src/map/paint.rs`, `paint_road` command) and the
-  save's non-empty normal designs; painting one clears the other and each stroke is one undo entry.
-  Painted paths and designs verified in game (2026-11-22). Notes in `docs/map-editor.md`.
+  save's non-empty normal designs, five to a row, and each stroke is one undo entry. Painted paths
+  and designs verified in game (2026-11-22). Since 2026-11-23 the two layers append instead of
+  replacing — a tile keeps a default path and a design at once, as the game stores them — with
+  Erase path / Erase design brushes next to Erase ground, and a Corners (rounded/sharp) choice
+  for path bends that also restyles bends the stroke paints over. The four reference patches and the
+  two design-over-path tiles were measured in acre G6 of the current `save/` dump; see
+  `docs/map-editor.md`.
 - **Map editor: terrain painting**: in — rivers (8-way banks, Rounded/Sharp bends), raise/lower with
   generated faces and rounded/sharp corners, straight one-level and consecutive falls, the 0–3 limit,
   the two-level-step refusal, the tree/building warning and semi-manual fall models; see
@@ -136,29 +141,28 @@ two jobs race to create the release. It has not been run yet.
   2026-11-21 (hot fix): a fall needs **no water behind it and no pool below** — the player paints
   water on a plateau edge and the game draws the fall recessed into the cliff face — and the fall
   model now follows the measured table for recessed strips, cascade tops/bottoms and single-tile
-  falls (`Fall101` on land, `Fall100` into water). That re-derives all 74 fall tiles of the sample
+  falls (the `Fall100`–`Fall103` table). That re-derives all 74 fall tiles of the sample
   save exactly. Verified in game (2026-11-21): a recessed fall with no source and a one-tile-wide
-  two-level cascade built with the editor. `Fall100` still matches the game's own family but was not
-  dumped from a game-placed copy. Corner falls do not exist in the game, and a fall dropping more
-  than one level is refused unless a terrace buffers it. Open: the unmeasured river junction shapes
-  (`4A`, `4B`, `5A`, `6A`, `6B`), which the generator fills as open water (`4C` is now used for the
-  1×1 pond inside a cross of falls), and the unmeasured `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants.
-  **Back up the save before terrain work.**
+  two-level cascade built with the editor. The one-tile table was dumped from a game-made reference
+  save on 2026-11-23: `Fall103` is the recessed (dry-back) fall that fixes the transparent back, and
+  `Fall102` is the dry-back fall into water or a cascade top. Corner falls do not exist in the game,
+  and a fall dropping more than one level is refused unless a terrace buffers it. Open: the unmeasured
+  river junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`), which the generator fills as open water (`4C`
+  is now used for the 1×1 pond inside a cross of falls), and the unmeasured
+  `Cliff2C`/`3A`/`4x`/`5A`/`6x` variants. **Back up the save before terrain work.**
 
-Branches (2026-11-22): the fork holds `master` only. `origin/master` was `da1ffb0`, the merge of PR #3
-(`map-editor-qol`: footprints, doors, drag, warnings, ground designs, path painting, terrain
-painting). Local `master` tracks `origin/master`; `windows-build`, `design-pattern-qol` and
-`map-editor-qol` were merged and deleted locally and on `origin`.
+Branches (2026-11-23): `origin/master` is `805a6d3`, the merge of PR #4
+(`design-shape-tools`: design shape tools, brush sizes, mirror, rotation, colour picker). Local
+`master` was not fast-forwarded. `debug/terrain-editor` is the local branch for the one-tile
+waterfall fix; it was cut from `origin/master` and is not pushed.
 
-`design-shape-tools` is the open branch for the design editor (shape tools, Fill all, brush sizes,
-pixel-grid overlay, left/right mirror, canvas rotate and wrap-drag, and the game's
-hue/vividness/brightness colour picker — see `docs/designs.md`). It is pushed to `origin` with no
-PR yet; `master` does not have it.
+`design-shape-tools` was merged through PR #4; `master` now has it.
 
 On 2026-11-21 the waterfall hot fix (three commits: recessed falls and the measured model table, the
 `Fall100`/`River4C` follow-up, the verification docs) was committed and pushed straight to
 `master` on `origin` with no PR. `save/` in the working tree is that day's dump, acre G6 being the
-waterfall test acre.
+waterfall test acre. On 2026-11-23 the one-tile fall table (`Fall100`–`Fall103`) was measured from a
+game-made reference save (`save-ref-1wide/`, local only) and the editor now writes it.
 
 Remotes: `origin` is the project fork on GitHub; `upstream` is `sh00kapic/nhse`.
 Do not push, open PRs or touch upstream unless explicitly asked.

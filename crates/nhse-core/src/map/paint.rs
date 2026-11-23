@@ -85,10 +85,13 @@ fn relevant_corners(sides: u8) -> u8 {
 
 /// Road model and angle for a tile of `family` with the given neighbours.
 /// Returns `None` for an unknown family. Side and corner bits are the game's 8-way path
-/// connections; only corners between two connected sides matter.
-pub fn road_autotile(family: &str, sides: u8, corners: u8) -> Option<(u16, u16)> {
+/// connections; only corners between two connected sides matter. `sharp` picks `3C` for a bend's
+/// outside corner and rounded uses `3B`; both are the same silhouette with a different corner.
+pub fn road_autotile(family: &str, sides: u8, corners: u8, sharp: bool) -> Option<(u16, u16)> {
     let corners = corners & relevant_corners(sides);
+    let bend = if sharp { "3C" } else { "3B" };
     for (suffix, base_sides, base_corners) in MODELS {
+        let suffix = if suffix == "3C" { bend } else { suffix };
         for angle in 0..4 {
             if rotate_sides(base_sides, angle) == sides
                 && rotate_corners(base_corners, angle) == corners
@@ -143,6 +146,8 @@ fn neighbours(
 /// them and their 8 neighbours so joins stay correct.
 ///
 /// `None` removes the road; the model, elevation and variation of the ground are untouched.
+/// `sharp` styles the bends the stroke creates. A bend the stroke did not touch keeps the
+/// rounded/sharp style already in the save.
 /// Returns the number of terrain tiles whose road data changed.
 pub fn paint_road(
     tiles: &mut [TerrainTile],
@@ -150,6 +155,7 @@ pub fn paint_road(
     h: usize,
     targets: &[(usize, usize)],
     family: Option<&str>,
+    sharp: bool,
 ) -> usize {
     if tiles.len() != w * h {
         return 0;
@@ -164,10 +170,12 @@ pub fn paint_road(
 
     let mut affected = std::collections::BTreeSet::new();
     let mut changed = std::collections::BTreeSet::new();
+    let mut painted = std::collections::BTreeSet::new();
     for &(x, y) in targets {
         if x >= w || y >= h {
             continue;
         }
+        painted.insert((x, y));
         let t = &mut tiles[x * h + y];
         if t.road != marker || t.road_angle != 0 || t.road_variation != 0 {
             changed.insert((x, y));
@@ -189,8 +197,21 @@ pub fn paint_road(
             continue;
         };
         let (sides, corners) = neighbours(tiles, w, h, x, y, fam);
-        if let Some((model, angle)) = road_autotile(fam, sides, corners) {
+        if let Some((model, angle)) = road_autotile(fam, sides, corners, sharp) {
             let t = &mut tiles[x * h + y];
+            // A bend the stroke did not touch keeps its style; only a target tile restyles.
+            let (rounded, angular) = (
+                model_id(fam, "3B").unwrap_or(0),
+                model_id(fam, "3C").unwrap_or(0),
+            );
+            let model = if (model == rounded || model == angular)
+                && !painted.contains(&(x, y))
+                && (t.road == rounded || t.road == angular)
+            {
+                t.road
+            } else {
+                model
+            };
             if t.road != model || t.road_angle != angle {
                 t.road = model;
                 t.road_angle = angle;
@@ -224,8 +245,9 @@ fn is_water(t: &TerrainTile) -> bool {
 /// by later water strokes.
 fn is_managed_fall(model: u16) -> bool {
     [
-        "Fall100", "Fall101", "Fall200", "Fall202", "Fall204", "Fall208", "Fall300", "Fall302",
-        "Fall304", "Fall308", "Fall400", "Fall403", "Fall408", "Fall421", "Fall422",
+        "Fall100", "Fall101", "Fall102", "Fall103", "Fall200", "Fall202", "Fall204", "Fall208",
+        "Fall300", "Fall302", "Fall304", "Fall308", "Fall400", "Fall403", "Fall408", "Fall421",
+        "Fall422",
     ]
     .iter()
     .any(|name| model == terrain_model(name))
@@ -550,8 +572,8 @@ fn fall_run(
 /// where the player placed the falls; see `docs/map-editor.md`.
 #[derive(Clone, Copy, PartialEq)]
 enum FallKind {
-    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip. A one-tile fall
-    /// dropping into water is `Fall100`.
+    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip. One-tile falls use
+    /// the measured `Fall100`–`Fall103` table, which also covers a dry back.
     Plain,
     /// No water behind and no water below: the fall sits recessed in the cliff face.
     Recessed,
@@ -662,14 +684,16 @@ fn assign_fall_run(
     for (i, &p) in run.iter().enumerate() {
         let from_ccw = if ccw_first { i } else { n - 1 - i };
         let model = if n == 1 {
-            // A one-tile fall ends on dry land with `Fall101` (measured); a fall that carries on
-            // into water below uses `Fall100`.
+            // One-tile falls are a 2×2 table of whether water is behind and below them; measured
+            // in game for all four directions (2026-11-23). A fall below counts as water.
             let (dx, dy) = drop_vector(angle);
+            let back = tile(tiles, w, h, p.0 as i64 - dx, p.1 as i64 - dy);
             let base = tile(tiles, w, h, p.0 as i64 + dx, p.1 as i64 + dy);
-            if base.is_some_and(is_water) {
-                terrain_model("Fall100")
-            } else {
-                terrain_model("Fall101")
+            match (back.is_some_and(is_water), base.is_some_and(is_water)) {
+                (true, true) => terrain_model("Fall100"),
+                (true, false) => terrain_model("Fall101"),
+                (false, true) => terrain_model("Fall102"),
+                (false, false) => terrain_model("Fall103"),
             }
         } else {
             let kind = fall_kind(tiles, w, h, p, angle, elevation);
@@ -1057,10 +1081,12 @@ mod tests {
     fn every_road_configuration_has_a_model() {
         for sides in 0..16u8 {
             for corners in 0..16u8 {
-                assert!(
-                    road_autotile("pattern", sides, corners).is_some(),
-                    "no model for sides={sides:04b} corners={corners:04b}"
-                );
+                for sharp in [true, false] {
+                    assert!(
+                        road_autotile("pattern", sides, corners, sharp).is_some(),
+                        "no model for sides={sides:04b} corners={corners:04b}"
+                    );
+                }
             }
         }
     }
@@ -1081,11 +1107,68 @@ mod tests {
         ];
         for (sides, corners, suffix, angle) in cases {
             assert_eq!(
-                road_autotile("pattern", sides, corners),
+                road_autotile("pattern", sides, corners, true),
                 Some((id(suffix), angle)),
                 "sides={sides:04b} corners={corners:04b}"
             );
         }
+    }
+
+    /// The four path patches of acre G6 in the sample save: identical silhouettes stored with a
+    /// rounded (`3B`) or sharp (`3C`) bend, chosen per tile. Painting the same shapes must
+    /// reproduce the dump, so this is the style toggle's reference.
+    #[test]
+    fn the_g6_test_acre_patches_match_the_save() {
+        let (w, h) = (16, 16);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let mut block = |x0: usize, y0: usize, n: usize, sharp: bool| {
+            let targets: Vec<(usize, usize)> = (x0..x0 + n)
+                .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
+                .collect();
+            paint_road(&mut tiles, w, h, &targets, Some("pattern"), sharp);
+        };
+        block(2, 2, 2, false); // rounded 2x2
+        block(6, 2, 2, true); // sharp 2x2
+        block(9, 1, 3, true); // sharp 3x3
+        block(13, 1, 3, false); // rounded 3x3
+
+        // measured in acre G6: corners angle a0 NW, a3 NE, a1 SW, a2 SE
+        let at = |x: usize, y: usize| (tiles[x * h + y].road, tiles[x * h + y].road_angle);
+        for (x0, suffix) in [(2usize, "3B"), (6, "3C")] {
+            assert_eq!(at(x0, 2), (id(suffix), 0), "2x2 NW {suffix}");
+            assert_eq!(at(x0 + 1, 2), (id(suffix), 3), "2x2 NE {suffix}");
+            assert_eq!(at(x0, 3), (id(suffix), 1), "2x2 SW {suffix}");
+            assert_eq!(at(x0 + 1, 3), (id(suffix), 2), "2x2 SE {suffix}");
+        }
+        for (x0, suffix) in [(9usize, "3C"), (13, "3B")] {
+            assert_eq!(at(x0, 1), (id(suffix), 0), "3x3 NW {suffix}");
+            assert_eq!(at(x0 + 2, 1), (id(suffix), 3), "3x3 NE {suffix}");
+            assert_eq!(at(x0, 3), (id(suffix), 1), "3x3 SW {suffix}");
+            assert_eq!(at(x0 + 2, 3), (id(suffix), 2), "3x3 SE {suffix}");
+            assert_eq!(at(x0 + 1, 1), (id("5B"), 3), "3x3 top edge");
+            assert_eq!(at(x0, 2), (id("5B"), 0), "3x3 west edge");
+            assert_eq!(at(x0 + 2, 2), (id("5B"), 2), "3x3 east edge");
+            assert_eq!(at(x0 + 1, 3), (id("5B"), 1), "3x3 bottom edge");
+            assert_eq!(at(x0 + 1, 2), (id("8A"), 0), "3x3 centre");
+        }
+    }
+
+    #[test]
+    fn a_stroke_restyles_only_the_tiles_it_paints() {
+        let (w, h) = (7, 7);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let square: Vec<(usize, usize)> =
+            (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
+        paint_road(&mut tiles, w, h, &square, Some("pattern"), false);
+        assert_eq!(tiles[h + 1].road, id("3B"));
+        // repaint the west edge column sharply: its corners restyle, the far ones must not
+        let west: Vec<(usize, usize)> = (1..=3).map(|y| (1, y)).collect();
+        paint_road(&mut tiles, w, h, &west, Some("pattern"), true);
+        let at = |x: usize, y: usize| tiles[x * h + y].road;
+        assert_eq!(at(1, 1), id("3C"), "painted NW corner");
+        assert_eq!(at(1, 3), id("3C"), "painted SW corner");
+        assert_eq!(at(3, 1), id("3B"), "untouched NE corner keeps its style");
+        assert_eq!(at(3, 3), id("3B"), "untouched SE corner keeps its style");
     }
 
     /// Paint with the default rounded corner style.
@@ -1485,7 +1568,7 @@ mod tests {
         paint_water(&mut tiles, w, h, &[(2, 1), (2, 2)], true, false).unwrap();
         assert!(is_fall(tiles[2 * h + 1].model));
         assert_eq!(tiles[2 * h + 1].angle, 2); // drops north
-                                               // the south face has land below: the fall is recessed into it
+                                               // water behind the south face, land below: Fall101
         paint_water(&mut tiles, w, h, &[(2, 3)], true, false).unwrap();
         let fall = tiles[2 * h + 3];
         assert_eq!(fall.model, terrain_model("Fall101")); // one tile, no strip
@@ -1565,12 +1648,63 @@ mod tests {
         let mut tiles = vec![TerrainTile::default(); w * h];
         let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
         paint(&mut tiles, w, h, &top, 1).unwrap();
-        // a river below the north face, then one water tile on the face itself
+        // a river below the north face, then the face and the plateau tile behind it
         paint_water(&mut tiles, w, h, &[(2, 0)], true, false).unwrap();
-        paint_water(&mut tiles, w, h, &[(2, 1)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(2, 1), (2, 2)], true, false).unwrap();
         let fall = tiles[2 * h + 1];
         assert_eq!(fall.model, terrain_model("Fall100"), "drops into the river");
         assert_eq!((fall.angle, fall.elevation), (2, 1));
+    }
+
+    #[test]
+    fn a_recessed_one_tile_fall_uses_fall103() {
+        let (w, h) = (6, 6);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &top, 1).unwrap();
+        // the south face only: dry land behind and below
+        paint_water(&mut tiles, w, h, &[(2, 3)], true, false).unwrap();
+        let fall = tiles[2 * h + 3];
+        assert_eq!(fall.model, terrain_model("Fall103"));
+        assert_eq!((fall.angle, fall.elevation), (0, 1));
+    }
+
+    #[test]
+    fn a_dry_back_one_tile_fall_into_water_uses_fall102() {
+        let (w, h) = (6, 6);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let top: Vec<(usize, usize)> = (1..=3).flat_map(|x| (1..=3).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &top, 1).unwrap();
+        // a river below the north face, then the face itself; the plateau behind it stays dry
+        paint_water(&mut tiles, w, h, &[(2, 0)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(2, 1)], true, false).unwrap();
+        let fall = tiles[2 * h + 1];
+        assert_eq!(fall.model, terrain_model("Fall102"));
+        assert_eq!((fall.angle, fall.elevation), (2, 1));
+    }
+
+    #[test]
+    fn a_one_tile_cascade_uses_fall102_above_fall101() {
+        let (w, h) = (7, 7);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let square = |a: usize, b: usize| -> Vec<(usize, usize)> {
+            (a..=b).flat_map(|x| (a..=b).map(move |y| (x, y))).collect()
+        };
+        paint(&mut tiles, w, h, &square(1, 5), 1).unwrap();
+        paint(&mut tiles, w, h, &square(2, 4), 1).unwrap();
+        // one column: lower fall on the e1 edge, then the upper fall on the e2 edge
+        paint_water(&mut tiles, w, h, &[(3, 5)], true, false).unwrap();
+        paint_water(&mut tiles, w, h, &[(3, 4)], true, false).unwrap();
+        let lower = tiles[3 * h + 5];
+        let upper = tiles[3 * h + 4];
+        assert_eq!(
+            (upper.model, upper.angle, upper.elevation),
+            (terrain_model("Fall102"), 0, 2)
+        );
+        assert_eq!(
+            (lower.model, lower.angle, lower.elevation),
+            (terrain_model("Fall101"), 0, 1)
+        );
     }
 
     #[test]
@@ -1601,7 +1735,7 @@ mod tests {
         let (w, h) = (4, 3);
         let mut tiles = vec![TerrainTile::default(); w * h];
         let run = [(1, 1), (2, 1), (3, 1)];
-        assert!(paint_road(&mut tiles, w, h, &run, Some("pattern")) > 0);
+        assert!(paint_road(&mut tiles, w, h, &run, Some("pattern"), true) > 0);
         assert_eq!(tiles[h + 1].road, id("1A"));
         assert_eq!(tiles[h + 1].road_angle, 1); // end pointing east
         assert_eq!(tiles[2 * h + 1].road, id("2A"));
@@ -1609,7 +1743,7 @@ mod tests {
         assert_eq!(tiles[3 * h + 1].road_angle, 3); // end pointing west
         assert_eq!(tiles[2 * h].road, 0); // unaffected neighbour stays empty
 
-        assert!(paint_road(&mut tiles, w, h, &run, None) > 0);
+        assert!(paint_road(&mut tiles, w, h, &run, None, true) > 0);
         for (x, y) in run {
             assert_eq!(tiles[x * h + y].road, 0);
         }

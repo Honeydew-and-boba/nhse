@@ -318,10 +318,37 @@ fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
     Some(wall)
 }
 
-/// Color of pixel (x, y) (0..16) inside a terrain tile.
-pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
+/// Sign of the quarter of a rounded ground-path bend that shows grass, or `None` when the tile is
+/// not a rounded bend. The game stores the same silhouette as `3B` (rounded outside corner) and
+/// `3C` (sharp, so the whole tile is path); the model name is the only difference.
+pub fn road_rounded_corner(model: u16, angle: u16) -> Option<(i32, i32)> {
+    if !model_name(model).ends_with("3B") {
+        return None;
+    }
+    // A bend fills the diagonal between its two connected sides: SE at angle 0, rotating
+    // counter-clockwise. The grass is the opposite corner.
+    Some(match [2u8, 1, 8, 4][(angle & 3) as usize] {
+        2 => (-1, -1), // SE filled: grass NW
+        1 => (-1, 1),  // NE filled: grass SW
+        8 => (1, 1),   // NW filled: grass SE
+        _ => (1, -1),  // SW filled: grass NE
+    })
+}
+
+/// Color of pixel (x, y) (0..16) inside a terrain tile. `road_corner` is the tile's rounded bend
+/// corner from `road_rounded_corner`, precomputed once per tile by the renderer.
+pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32, road_corner: Option<(i32, i32)>) -> Rgb {
     if is_road(t.road) {
         let c = road_color(t.road);
+        if let Some((sx, sy)) = road_corner {
+            // The outside of a rounded bend is a quarter disc of grass in the tile corner.
+            const R: i32 = 8; // shortcut: radius guessed from the game's look, tweak if it reads wrong
+            let px = if sx < 0 { x } else { 15 - x };
+            let py = if sy < 0 { y } else { 15 - y };
+            if px < R && py < R && (R - px).pow(2) + (R - py).pow(2) > R * R {
+                return grass(t.elevation);
+            }
+        }
         // subtle texture so road patches read as paths
         return if (x + y) % 8 == 0 { shade(c, 0.93) } else { c };
     }
@@ -374,6 +401,27 @@ pub fn model_name(m: u16) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rounded_road_bend_shows_its_grass_corner() {
+        let model =
+            |n: &str| crate::data::tables::enum_value("TerrainUnitModel", n).unwrap() as u16;
+        let tile = |m: u16, angle: u16| TerrainTile {
+            road: m,
+            road_angle: angle,
+            ..Default::default()
+        };
+        let corner = road_rounded_corner(model("RoadFanPattern3B"), 0);
+        assert_eq!(corner, Some((-1, -1))); // SE filled, so the NW corner is grass
+        let rounded = tile(model("RoadFanPattern3B"), 0);
+        assert_eq!(tile_pixel(&rounded, 0, 0, corner), grass(0));
+        assert_eq!(tile_pixel(&rounded, 8, 9, corner), road_color(rounded.road));
+        // sharp bends and non-bends fill the whole tile
+        let sharp = tile(model("RoadFanPattern3C"), 0);
+        assert_eq!(road_rounded_corner(sharp.road, 0), None);
+        assert_eq!(tile_pixel(&sharp, 8, 9, None), road_color(sharp.road));
+        assert_eq!(road_rounded_corner(model("RoadFanPattern2A"), 0), None);
+    }
 
     #[test]
     fn cliff_wall_shows_rounded_and_sharp_corners() {

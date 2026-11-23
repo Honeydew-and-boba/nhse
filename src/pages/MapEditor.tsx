@@ -15,7 +15,7 @@ import { MOD } from "../lib/util";
 type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
 type Pick = { kind: "building"; index: number } | null;
-type GroundBrush = { kind: "path"; family: string } | { kind: "design"; index: number } | { kind: "erase" };
+type GroundBrush = { kind: "path"; family: string } | { kind: "design"; index: number } | { kind: "erase"; layer: "both" | "path" | "design" };
 type TerrainBrush = { kind: "water" } | { kind: "water-erase" } | { kind: "cliff"; delta: number } | { kind: "shape"; model: number; angle: number };
 type Snapshot = { layer: number; tiles: Item[] } | { ground: { terrain: Uint8Array; designs: number[] } };
 interface View { s: number; x: number; y: number }
@@ -51,6 +51,8 @@ const TERRAIN_SHAPES: [name: string, label: string][] = [
   ["Cliff8", "Flat top, no edges"],
   ["Fall100", "Fall, one tile alone, dropping into water"],
   ["Fall101", "Fall, one tile alone, ending on land"],
+  ["Fall102", "Fall, one tile alone, dry back into water"],
+  ["Fall103", "Fall, one tile alone, dry back onto land"],
   ["Fall200", "Fall strip end, counter-clockwise side"],
   ["Fall300", "Fall strip end, clockwise side"],
   ["Fall400", "Fall strip middle"],
@@ -155,6 +157,8 @@ export default function MapEditor() {
   const [tbrush, setTbrush] = useState<TerrainBrush | null>(null);
   const [terrainSize, setTerrainSize] = useState(1);
   const [sharp, setSharp] = useState(false);
+  // ground paths keep their own corner style: the game stores the same bend as rounded or sharp
+  const [roadSharp, setRoadSharp] = useState(false);
   const [shape, setShape] = useState({ model: 0, angle: 0 });
   const [patterns, setPatterns] = useState<DesignInfo[] | null>(null);
   const [stroke, setStroke] = useState<[number, number][]>([]);
@@ -559,7 +563,10 @@ export default function MapEditor() {
           // ground brushes work in one-terrain-tile (2×2 item tile) blocks
           [fw, fh] = [2, 2];
           hx = hover[0] & ~1; hy = hover[1] & ~1;
-          if (ground.kind !== "design" && !terrainTile(hx, hy)) ok = false;
+          // a design (and erasing one) lives on the whole field; paths only exist in the
+          // terrain data, which covers the middle 7×6 acres
+          const needsTerrain = ground.kind === "path" || (ground.kind === "erase" && ground.layer !== "design");
+          if (needsTerrain && !terrainTile(hx, hy)) ok = false;
         } else if (tool === "place" && brush.id !== NONE_ID) {
           [fw, fh] = footprint(gd, brush);
           ok = !settings?.map_prevent_overlap || grid().check(gd, brush, hover[0], hover[1]) === "ok";
@@ -647,14 +654,21 @@ export default function MapEditor() {
     const uniq = (a: [number, number][]) => [...new Map(a.map((p) => [p.join(","), p] as [string, [number, number]])).values()];
     const designs = uniq(tiles.map(([x, y]) => [x >> 1, y >> 1] as [number, number]));
     const terrain = uniq(tiles.map(([x, y]) => terrainTile(x, y)).filter((p): p is [number, number] => !!p));
+    // a tile holds a default path and a design in separate save fields, so painting one keeps
+    // the other; only the erase brushes remove a layer. See docs/map-editor.md.
+    const layer = brush.kind === "erase" ? brush.layer : brush.kind;
+    const wantPath = layer === "path" || layer === "both";
+    const wantDesign = layer === "design" || layer === "both";
     const dh = meta.design_dims[1];
     const next = meta.design_tiles.slice();
-    for (const [x, y] of designs) next[x * dh + y] = brush.kind === "design" ? brush.index : 0xf800;
-    const designsChanged = designs.some(([x, y]) => next[x * dh + y] !== meta.design_tiles[x * dh + y]);
-    if (!terrain.length && !designsChanged) return;
+    if (wantDesign) {
+      for (const [x, y] of designs) next[x * dh + y] = brush.kind === "design" ? brush.index : 0xf800;
+    }
+    const designsChanged = wantDesign && designs.some(([x, y]) => next[x * dh + y] !== meta.design_tiles[x * dh + y]);
+    if ((!wantPath || !terrain.length) && !designsChanged) return;
     try {
       const prevTerrain = await before.terrain;
-      await api.paintRoad(terrain, brush.kind === "path" ? brush.family : null);
+      if (wantPath && terrain.length) await api.paintRoad(terrain, brush.kind === "path" ? brush.family : null, roadSharp);
       if (designsChanged) { await api.setDesignTiles(next); setMeta({ ...meta, design_tiles: next }); }
       await loadTerrain();
       undo.current.push({ ground: { terrain: prevTerrain, designs: before.designs } });
@@ -1078,7 +1092,15 @@ export default function MapEditor() {
             ))}
           </div>
           <div className="row">
-            <Button size="sm" variant={ground?.kind === "erase" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setTbrush(null); setGround({ kind: "erase" }); setTool("place"); }}>Erase ground</Button>
+            <span className="tiny faint" style={{ minWidth: 40 }}>Corners</span>
+            <Select value={roadSharp ? 1 : 0} onChange={(v) => setRoadSharp(v === 1)}
+              options={[{ value: 0, label: "Rounded" }, { value: 1, label: "Sharp" }]} style={{ width: 110 }} />
+            <span className="tiny faint">path bends</span>
+          </div>
+          <div className="row wrap">
+            <Button size="sm" variant={ground?.kind === "erase" && ground.layer === "both" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setTbrush(null); setGround({ kind: "erase", layer: "both" }); setTool("place"); }}>Erase ground</Button>
+            <Button size="sm" variant={ground?.kind === "erase" && ground.layer === "path" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setTbrush(null); setGround({ kind: "erase", layer: "path" }); setTool("place"); }}>Erase path</Button>
+            <Button size="sm" variant={ground?.kind === "erase" && ground.layer === "design" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setTbrush(null); setGround({ kind: "erase", layer: "design" }); setTool("place"); }}>Erase design</Button>
             {ground && <Button size="sm" variant="ghost" onClick={() => setGround(null)}>Stop</Button>}
           </div>
           <div className="label" style={{ marginTop: 4 }}>My designs</div>
@@ -1087,7 +1109,7 @@ export default function MapEditor() {
           ) : (
             <div style={{ flex: "none", maxHeight: 170, overflowY: "auto" }}>
               {/* the panel is a flex column; without this wrapper the grid rows get squeezed instead of scrolling */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 }}>
                 {patterns.map((p) => (
                   <button key={p.index} title={p.name || `Design ${p.index + 1}`} onClick={() => { setTbrush(null); setGround({ kind: "design", index: p.index }); setTool("place"); }}
                     style={{ padding: 0, borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
@@ -1100,8 +1122,8 @@ export default function MapEditor() {
           )}
           <div className="tiny faint">
             {ground
-              ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : "the ground away"}</b>. Drag on the map; pick an item above to place items again.</>
-              : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other. PRO designs can't be placed on the ground in game, so they aren't offered.</>}
+              ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : ground.layer === "both" ? "paths and designs away" : `only the ${ground.layer === "path" ? "path" : "design"} away`}</b>. Drag on the map; pick an item above to place items again.</>
+              : <>Click a path or design, then drag on the map. Default paths join up automatically, and a path and a design can share a tile. The Corners choice styles new path bends; PRO designs can't be placed on the ground in game, so they aren't offered.</>}
           </div>
         </div>
         <div className="divider" />

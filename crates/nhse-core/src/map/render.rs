@@ -1,5 +1,5 @@
 //! Rasterization of the island map and item color tables.
-use super::terrain::{tile_pixel, Rgb, TerrainTile, TILES_H, TILES_W};
+use super::terrain::{road_rounded_corner, tile_pixel, Rgb, TerrainTile, TILES_H, TILES_W};
 use crate::data::items::{item_count, item_kind, KIND_UNKNOWN};
 use crate::data::tables::{enum_value, tables};
 
@@ -87,6 +87,11 @@ pub fn render_terrain(view: &TerrainView, px: usize) -> (usize, usize, Vec<u8>) 
                 && rel_y >= 0
                 && (rel_x as usize) < TILES_W
                 && (rel_y as usize) < TILES_H;
+            // one model lookup per tile: a rounded bend shows grass in one tile corner
+            let road_corner = inside
+                .then(|| view.tile(rel_x as usize, rel_y as usize))
+                .filter(|t| t.road != 0)
+                .and_then(|t| road_rounded_corner(t.road, t.road_angle));
             for sy in 0..px {
                 for sx in 0..px {
                     // sample the 16×16 tile pattern
@@ -100,6 +105,7 @@ pub fn render_terrain(view: &TerrainView, px: usize) -> (usize, usize, Vec<u8>) 
                             view.tile(rel_x as usize, rel_y as usize),
                             ix as i32,
                             iy as i32,
+                            road_corner,
                         ),
                         Some(c) => c,
                         None => [86, 176, 210],

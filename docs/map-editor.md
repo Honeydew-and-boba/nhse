@@ -108,7 +108,8 @@ X/Y inputs for those kinds. Leave them where the game put them.
 
 `HorizonSave::map_design_tiles()` (exposed as `MapMeta.design_tiles`, `design_dims`) is the
 game's `MyDesignMap`: one `u16` per terrain tile, column-major (`x * 96 + y`), `0xF800` = empty.
-It overlays the terrain, so the tile under a design can still be plain grass. The editor draws a
+It overlays the terrain, so the tile under a design can still be plain grass or a default path,
+which is drawn under the design's transparent pixels. The editor draws a
 normal design's 32×32 thumbnail (from `design/normal/<index>`) into its `2s × 2s` screen pixels,
 with normal alpha so transparent pixels reveal the ground. The bottom-left readout appends
 `Ground design #<index>`; the View menu has a **Ground designs** toggle.
@@ -130,14 +131,19 @@ Preview notes:
 ## Painting paths and designs
 
 The Item panel runs **Brush → Selected tile → Ground**. The **Ground** section holds the eight
-default path families, the save's non-empty normal designs, an erase swatch and Stop. Choosing one puts the Place tool into ground
-mode; clicking or dragging paints one terrain tile (2×2 item tiles). Choosing an item, **Paint with
-it** or **Use as brush** returns to item placement. A stroke commits once on pointer release and is
-one normal undo entry (terrain and `MyDesignMap` are snapshotted together).
+default path families, the save's non-empty normal designs (five to a row, like the in-game
+editor), three erase brushes and Stop. Choosing one puts the Place tool into ground mode; clicking
+or dragging paints one terrain tile (2×2 item tiles). Choosing an item, **Paint with it** or **Use as
+brush** returns to item placement. A stroke commits once on pointer release and is one normal undo
+entry (terrain and `MyDesignMap` are snapshotted together).
 
-Painting a default path writes `TerrainTile.road` and clears the design on that physical tile;
-painting a design writes `MyDesignMap` and clears the road. This matches the game, where one
-replaces the other. **Erase ground** clears both.
+**A tile holds both layers.** `TerrainTile.road` and the `MyDesignMap` entry are separate save
+fields, and the game stores a default path and a ground design on the same tile; the design is drawn
+on top with its own transparency. Measured in acre G6 of the sample save: terrain (85,76) is
+`RoadFanPattern0A` plus design 9, (87,76) is `RoadStone0A` plus design 9, and (89,76) is
+`RoadBrick0A` with no design. So painting a path only writes the road layer and keeps the design,
+and painting a design only writes the design. **Erase ground** clears both; **Erase path** and
+**Erase design** clear one layer.
 
 Default path models come from the 8-way same-family neighbourhood:
 `map/paint.rs::road_autotile` turns the connected sides and filled outer corners into a
@@ -146,6 +152,23 @@ tiles) and matches all of them; a unit test covers ends, straights, corners, T-j
 and a painted run. Roads of different families do not join, which is also what the save shows. The
 game has no model for a crossing with exactly three filled corners, so that rare case uses the
 fully-filled crossing (`8A`).
+
+### Path corner style
+
+Every road family ships the same bend twice: `...3B` has a rounded outside corner and `...3C` a
+sharp one, same silhouette, same angles. The game picks per tile, and not from the geometry: acre G6
+of the sample save has a rounded 2×2 and a sharp 2×2 side by side, plus a sharp 3×3 and a rounded
+3×3. The Ground section's **Corners** choice (default Sharp, the style the editor wrote before the
+choice existed) styles the bends a stroke creates and restyles the bends it paints over. A bend that
+is only re-tiled as a neighbour of the stroke keeps the style already in the save, so extending a
+path does not restyle an existing patch. `the_g6_test_acre_patches_match_the_save` in `paint.rs`
+re-derives the four G6 patches from the dump, and `a_stroke_restyles_only_the_tiles_it_paints`
+covers the neighbour rule.
+
+The terrain preview draws a rounded bend as a quarter-tile arc of grass in its outside corner
+(`terrain.rs::road_rounded_corner`), so the choice is visible before saving; a sharp bend fills the
+whole tile. Junction and crossing notches are not drawn: their art is unmeasured, and the game's
+`4A`/`5A`/`6A` variants are not modelled.
 
 Coordinates: a layer tile maps to terrain tile
 `((x + field.offset_x) / 2 - 16, (y + field.offset_y) / 2 - 16)` because the terrain data covers the
@@ -276,14 +299,26 @@ the two-level gorge:
 | dry land or cliff at the same height (recessed) | dry land | `Fall208` / `Fall308` | `Fall400` (unmeasured) |
 | dry land or cliff at the same height | the fall below (cascade top) | `Fall204` / `Fall304` | `Fall408` |
 | a fall one level up (cascade bottom) | dry land | `Fall208` (east drop) / `Fall302`; `Fall202` (west drop) / `Fall308` | `Fall403`, with `Fall422` (east drop) or `Fall421` (west drop) second from the north end |
-| anything | dry land (one-tile fall) | `Fall101` | — |
-| anything | water (one-tile fall) | `Fall100` | — |
 
-`Fall101` is measured (the 3×3 pad in the test acre). `Fall100` was inferred as the counterpart for a
-one-tile fall that carries on into water — the 2026-11-21 build wrote `Fall101` there and the game
-drew a grass lip where the upper fall landed on the fall below — and a one-tile-wide two-level
-cascade built by the editor now looks right in game (2026-11-21). The model itself has not been
-dumped from a game-made copy yet.
+A one-tile fall (a strip of length 1) does not use the strip table. Its model is a 2×2 table of
+whether water is behind and below it, measured from a game-made reference save in all four
+directions on 2026-11-23:
+
+| Behind the fall | Below the fall | Model |
+|---|---|---|
+| water at the same height, or a fall one level up | water, or a fall one level down | `Fall100` |
+| water at the same height, or a fall one level up | dry land | `Fall101` |
+| dry land or cliff at the same height | water, or a fall one level down | `Fall102` |
+| dry land or cliff at the same height | dry land | `Fall103` |
+
+The two levels of a one-tile cascade are the second and third rows in practice: the upper fall has a
+dry back and a fall below (`Fall102`), the lower one has a fall behind and dry land below (`Fall101`).
+
+The 2026-11-21 check only covered a one-tile fall that was already known to work; the 2026-11-23
+reference save dumped every one-tile context from game-placed copies, including the recessed fall
+(`Fall103`), the fall with a dry back over water (`Fall102`) and both levels of a one-tile cascade.
+Before this, the editor wrote `Fall101` for every dry back, which made the recessed fall's back
+transparent.
 
 Re-deriving every fall tile of the sample save from the rules above reproduces all 74 of them,
 model and angle, including both gorge tiers and every pad in the test acre. Contexts the save never
@@ -342,6 +377,10 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
   change a bend or a corner by hand.
 - A saddle (two low diagonals, no low side) or a strip with no connected same-height side is still
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
+- A one-tile fall that drops into a multi-tile pool can sit over an unmeasured 4-water-side/2-land-
+  diagonal river junction. The generator fills that base as `River8A`, so open-water waves can show
+  under the fall even though the fall model is correct. Measuring the missing junction models is the
+  fix.
 - The generator writes the rounded `Cliff3B` style for every 2-adjacent-low corner unless the
   **Corners** choice is Sharp (`Cliff3C`).
 - In game (2026-11-22): single raises, multi-tile cliffs, heights 2–3, rivers, sharp and rounded
@@ -371,17 +410,21 @@ data layout changed.
 
 Hot fix (2026-11-21): waterfalls no longer need water behind them or a pool below, and the fall
 model is chosen from what is behind and under the fall as measured on acre G6 of a fresh save (see
-Waterfalls). A recessed strip uses `Fall208`/`Fall308`, a one-tile fall ends on land with `Fall101`
-and drops into water with `Fall100`, and the cascade-top/bottom families use their measured models;
-unknown contexts keep the plain `Fall200`/`Fall300`/`Fall400` strip. The `dry` count left the
-`paint_water`/`paint_height` return and `TerrainPaintResult`; the toast now only reports corner
-drops. A one-tile pond in the middle of a fall cross is now `River4C` instead of open water. The
-rules were checked by re-deriving every fall tile of the save: 74 of 74 match the game byte for byte.
-Verified in game (2026-11-21): a recessed fall with no source, and a one-tile-wide two-level cascade
-built with the editor, including the `Fall100` join and the `River4C` top.
+Waterfalls). A recessed strip uses `Fall208`/`Fall308`, a one-tile fall uses the measured
+`Fall100`–`Fall103` table (water or dry behind × water or dry below), and the cascade-top/bottom
+families use their measured models; unknown contexts keep the plain `Fall200`/`Fall300`/`Fall400`
+strip. The `dry` count left the `paint_water`/`paint_height` return and `TerrainPaintResult`; the
+toast now only reports corner drops. A one-tile pond in the middle of a fall cross is now `River4C`
+instead of open water. The rules were checked by re-deriving every fall tile of the save: 74 of 74
+match the game byte for byte. Verified in game (2026-11-21): a recessed fall with no source, and a
+one-tile-wide two-level cascade built with the editor, including the one-tile join and the `River4C`
+top.
 
-Known limit after that test: `Fall100` is inferred from the game's own fall families and matched in
-game, but it has not been dumped from a copy the game placed itself.
+One-tile model table (2026-11-23): a game-made reference save with one-tile falls in every context
+showed `Fall100` (water behind and below), `Fall101` (water behind, dry below), `Fall102` (dry
+behind, water or a fall below) and `Fall103` (dry behind and below), in all four directions. The
+editor now writes that table; before this it wrote `Fall101` for every dry back, which left the
+recessed fall's back transparent and used the wrong model at a one-tile cascade top.
 
 Done in this pass: translucent door plates with a one-tile door glyph and four-way move badge (only
 the first part of a multi-part door gets the glyph, so Able Sisters shows one icon), villager-house
@@ -399,18 +442,27 @@ refused without writing. A second pass added the measured `Cliff0A`/`Cliff1A`/`C
 0–3 write limit with a load warning for higher saves, stronger stepped grass/dirt colours, height
 contours and a hover height readout. A third pass added the **Corners** rounded/sharp choice for new
 cliff corners (existing corners keep their style) and the semi-manual waterfall mode: the model list
-now uses plain-language labels and carries the 13 fall models the save uses, and any hand-set fall
-model survives later water strokes.
+now uses plain-language labels and carries the measured fall models, and any hand-set fall model
+survives later water strokes.
 
 Next: verify the remaining building sizes/positions, fill in door data for the fixed structures, and
 measure the river junction models.
+
+Fourth pass (2026-11-23, paths): the Ground section gained a **Corners** rounded/sharp choice for
+default-path bends (`3B`/`3C`), the "My designs" palette went to five columns, painting now appends
+instead of replacing (a tile keeps its other ground layer; measured in acre G6 of the new dump), and
+**Path only** / **Design only** erase brushes were added next to **Erase ground**. The terrain
+preview now draws a rounded bend's outside corner, so the style is visible before saving. The four
+path patches of acre G6 were read from the dump with `examples/probe` (now also printing road and
+design per tile) and are a checked-in re-derive test. Junction notches and the `4A`/`5A`/`6A` path
+variants remain unmeasured.
 
 ## Remaining goals (not started — handoff notes)
 
 1. **Terrain painting follow-ups.** Rivers, cliffs, sharp/rounded corners on both, straight one-level
    waterfalls, the recessed (sourceless) fall and semi-manual fall models are in and verified in game
    (see above). Still open: the unmeasured river junction shapes (`4A`, `4B`, `5A`, `6A`, `6B`), which
-   the generator fills as open water (`4C` is now used for the 1×1 pond inside a cross of falls), the
-   `Fall102`/`Fall103` one-tile variants and the `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x`
+   the generator fills as open water (`4C` is now used for the 1×1 pond inside a cross of falls), and
+   the `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x`
    style variants. Corner falls do not exist in the game; a fall that drops more than one level is
    refused unless a terrace buffers it.
