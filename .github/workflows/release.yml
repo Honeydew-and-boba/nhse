@@ -1,7 +1,7 @@
 name: Release
 
 # Builds every app from one commit and publishes them together as a release:
-# the macOS app (.dmg and .app.zip) and the Switch 2 homebrew app (nhse.nro).
+# the macOS app (.dmg and .app.zip), Windows installer (.exe), and Switch 2 homebrew app (nhse.nro).
 #
 # Start it from the Actions tab (Run workflow, with the tag, e.g. v4.0.0), or push a v* tag.
 # The tag must match the version in Cargo.toml.
@@ -82,6 +82,38 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  windows:
+    name: Windows (x64)
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ". -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build app bundle
+        run: npm run tauri -- build --target x86_64-pc-windows-msvc --bundles nsis
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NHSE-Windows-x64
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
   switch2:
     name: Switch 2 (nhse.nro)
     needs: check
@@ -111,7 +143,7 @@ jobs:
 
   release:
     name: Publish
-    needs: [check, macos, switch2]
+    needs: [check, macos, windows, switch2]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -130,7 +162,7 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
           body: |
-            Save editor for **Animal Crossing: New Horizons**, rewritten in Rust: a desktop app for Apple Silicon Macs and a homebrew app for the **Nintendo Switch 2**. Both read and write saves with the same library.
+            Save editor for **Animal Crossing: New Horizons**, rewritten in Rust: a desktop app for Apple Silicon Macs and Windows (x64), and a homebrew app for the **Nintendo Switch 2**. All builds read and write saves with the same library.
 
             ## Downloads
 
@@ -138,6 +170,7 @@ jobs:
             | --- | --- |
             | `NHSE_${{ needs.check.outputs.version }}_aarch64.dmg` | macOS, Apple Silicon |
             | `NHSE-macOS-arm64.app.zip` | macOS, the app without the disk image |
+            | `NHSE_${{ needs.check.outputs.version }}_x64-setup.exe` | Windows (x64), NSIS installer |
             | `nhse.nro` | Nintendo Switch 2 (homebrew) |
 
             ## macOS
@@ -148,6 +181,10 @@ jobs:
             3. Open NHSE and choose your save folder (the one containing `main.dat`) or a `.zip` of it.
 
             Island: villagers, map editor, houses and rooms, museum, designs, turnips, visitors, bulletin board, recycle bin and flags. Residents: profile, pockets, storage, recipes, catalog, reactions, achievements, mailbox and flags. Saves are backed up when opened and written only when you press Save.
+
+            ## Windows (x64)
+
+            Run the `_x64-setup.exe` installer, then open NHSE and choose your save folder or a `.zip` of it.
 
             ## Nintendo Switch 2
 
