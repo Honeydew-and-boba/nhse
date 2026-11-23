@@ -34,7 +34,7 @@ how to build it with [ounce-devkit](https://github.com/ouncebrew/ounce-devkit).
 
 ## Features
 
-- **Island:** villagers (replace with any villager, including their house and belongings; memories; greetings; clothes and furniture), map editor, player and villager houses with a room furniture editor, museum, custom designs (pixel editor, PNG import/export), turnips, visitors, bulletin board, recycle bin and island flags.
+- **Island:** villagers (replace with any villager, including their house and belongings; memories; greetings; clothes and furniture), map editor, player and villager houses with a room furniture editor, museum, custom designs (pixel editor with undo/redo and transparency, PNG import/export, `.nhd`/`.nhpd` files and `.acnh` import), turnips, visitors, bulletin board, recycle bin and island flags.
 - **Map editor:** pan and zoom with trackpad gestures, place/erase/select tools with automatic multi-tile handling, undo/redo, copy and paste of areas, bulk tools (remove weeds and other categories, water flowers, spawn items or DIY cards, replace), buildings, plaza, acres, and `.nhl`/`.nht`/`.nhb`/`.nha`/`.nhmd` import/export.
 - **Residents:** profile, pockets, storage, DIY recipes, catalog, reactions, Nook Miles achievements, mailbox (letters, find and replace) and player flags.
 - **Safety:** automatic backup of the save files when a save is opened (Backups page), hash verification, and revert to the last saved state. Files are only written when you press **Save** (⌘S).
