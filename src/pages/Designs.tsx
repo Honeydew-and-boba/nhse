@@ -1,14 +1,22 @@
-import { Download, Droplet, Eraser, FileDown, FileUp, ImageDown, ImageUp, PaintBucket, Palette, Pencil, Pipette, UserCheck } from "lucide-react";
+import { Circle, Disc, Download, Droplet, Eraser, FileDown, FileUp, Heart, ImageDown, ImageUp, Move, PaintBucket, PaintRoller, Palette, Pencil, Pipette, RotateCcw, RotateCw, Slash, Square, Star, UserCheck } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Button, Card, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
+import { Button, Card, Check, Field, Loading, MenuButton, Modal, Segmented, Tabs, TextInput } from "../components/ui";
 import { api, type DesignKind, type DesignPixels } from "../lib/api";
+import { gameColor, gameIndex, HUE_COLORS, VIVID_COUNT, BRIGHT_COUNT } from "../lib/designColors";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { asset } from "../lib/items";
+import * as shapes from "../lib/shapes";
+import type { Point, Stamp } from "../lib/shapes";
 import { useLoad, useStore } from "../lib/store";
 import { MOD } from "../lib/util";
 
 const SHEETS = ["Front", "Back", "Right", "Left"];
 const CHECKER = "conic-gradient(#cdcdcd 25%, #ebebeb 0 50%, #cdcdcd 0 75%, #ebebeb 0)";
+// In-game stamp diameters are 4 / 10 / 36; L is capped at the 32 px sheet.
+const STAMP_RADII = [2, 5, 16];
+const BRUSHES = [1, 2, 3];
+const checker = (i: number): number[] =>
+  ((i % 32) >> 2) % 2 === ((i >> 5) >> 2) % 2 ? [235, 235, 235, 255] : [205, 205, 205, 255];
 
 export default function Designs() {
   const { touch, toast, rev, player, save, confirm } = useStore();
@@ -51,22 +59,62 @@ export default function Designs() {
   );
 }
 
-type Tool = "pencil" | "fill" | "pick" | "erase";
+type Tool = "pencil" | "fill" | "fill-all" | "pick" | "erase" | "line" | "rect" | "ellipse" | Stamp | "move";
+const isStamp = (t: Tool): t is Stamp => t === "circle" || t === "star" || t === "heart";
+const isShape = (t: Tool) => t === "line" || t === "rect" || t === "ellipse" || isStamp(t);
+const clampCell = ([x, y]: Point): Point => [Math.min(31, Math.max(0, x)), Math.min(31, Math.max(0, y))];
+// The mirror axis runs between columns 15 and 16, as in the game.
+const mirrorCol = (k: number) => k - (k % 32) + 31 - (k % 32);
+
+// One strip per game channel. Each cell is the colour that step actually produces,
+// so the strips show the game's own steps rather than a CSS gradient.
+function Strip({ label, round, colors, at, onPick }: { label: string; round?: boolean; colors: string[]; at?: number; onPick: (i: number) => void }) {
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "center" }}>
+      <span className="small muted" style={{ width: 60 }}>{label}</span>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(15, 20px)", gap: 3 }}>
+        {colors.map((c, i) => (
+          <button key={i} aria-label={`${label} ${i + 1}`} title={`${label} ${i + 1} · ${c.toUpperCase()}`} onClick={() => onPick(i)}
+            style={{ width: 20, height: 20, padding: 0, background: c, borderRadius: round ? "50%" : 6,
+              border: i === at ? "2px solid var(--accent)" : "1px solid var(--border-strong)",
+              boxShadow: i === at ? "0 0 0 2px var(--accent-soft)" : undefined }} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind; index: number; ext: string; onClose: () => void; onSaved: () => void }) {
   const { toast } = useStore();
   const [d, setD] = useState<DesignPixels | null>(null);
   const [sheet, setSheet] = useState(0);
   const [color, setColor] = useState(0);
+  // Game indices behind the selected slot's colour. Remembered per slot so a colour
+  // that repeats across hues (the near-gray steps) keeps the markers where the user put them.
+  const [bars, setBars] = useState<{ slot: number; at: [number, number, number] } | null>(null);
   const [tool, setTool] = useState<Tool>("pencil");
+  const [stampSize, setStampSize] = useState(1);
+  const [brushSize, setBrushSize] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [grid, setGrid] = useState(true);
+  const [mirror, setMirror] = useState(false);
+  const [preview, setPreview] = useState<number[] | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const painting = useRef(false);
   const stroke = useRef(false);
+  const drag = useRef<{ a: Point; b: Point } | null>(null);
   // Whole-array snapshots; `d.pixels` is never mutated in place.
   const hist = useRef<{ past: number[][]; future: number[][] }>({ past: [], future: [] });
+  // Move tool: the sheet as it was when the drag started, plus the last applied
+  // offset, so every move recomputes from that snapshot instead of compounding.
+  const pan = useRef<{ start: Point; base: number[]; dx: number; dy: number } | null>(null);
+  // The design as loaded or last saved. "Dirty" means "differs from this", so a
+  // no-op edit (undoing every stroke, rotating four times, dragging back) leaves
+  // Save disabled instead of offering to rewrite an unchanged design.
+  const clean = useRef<DesignPixels | null>(null);
   const load = () => api.designPixels(kind, index).then((x) => {
     setD(x);
+    clean.current = x;
     setDirty(false);
     hist.current = { past: [], future: [] };
   });
@@ -80,13 +128,12 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     const img = ctx.createImageData(32, 32);
     for (let i = 0; i < 1024; i++) {
       const p = d.pixels[sheet * 1024 + i];
-      if (p >= 15) {
-        const light = ((i % 32) >> 2) % 2 === ((i >> 5) >> 2) % 2;
-        img.data.set(light ? [235, 235, 235, 255] : [205, 205, 205, 255], i * 4);
-      } else img.data.set([...d.palette[p], 255], i * 4);
+      if (p >= 15) img.data.set(checker(i), i * 4);
+      else img.data.set([...d.palette[p], 255], i * 4);
     }
+    if (preview) for (const i of preview) img.data.set(color < 15 ? [...d.palette[color], 255] : checker(i), i * 4);
     ctx.putImageData(img, 0, 0);
-  }, [d, sheet]);
+  }, [d, sheet, preview, color]);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -102,31 +149,45 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   }, [d]);
 
   if (!d) return null;
+  const commit = (next: DesignPixels) => {
+    const c = clean.current!;
+    setD(next);
+    setDirty(next.info.name !== c.info.name || JSON.stringify(next.palette) !== JSON.stringify(c.palette)
+      || next.pixels.length !== c.pixels.length || next.pixels.some((p, i) => p !== c.pixels[i]));
+  };
+  const pushHist = (pixels: number[]) => {
+    hist.current.past.push(pixels);
+    if (hist.current.past.length > 64) hist.current.past.shift();
+    hist.current.future = [];
+  };
   const remember = () => {
     if (stroke.current) return;
     stroke.current = true;
-    hist.current.past.push(d.pixels);
-    if (hist.current.past.length > 64) hist.current.past.shift();
-    hist.current.future = [];
+    pushHist(d.pixels);
   };
   const undo = () => {
     const prev = hist.current.past.pop();
     if (!prev) return;
     hist.current.future.unshift(d.pixels);
-    setD({ ...d, pixels: prev });
-    setDirty(true);
+    commit({ ...d, pixels: prev });
   };
   const redo = () => {
     const next = hist.current.future.shift();
     if (!next) return;
     hist.current.past.push(d.pixels);
-    setD({ ...d, pixels: next });
-    setDirty(true);
+    commit({ ...d, pixels: next });
   };
-  const pos = (e: React.MouseEvent) => {
-    const r = (e.target as HTMLCanvasElement).getBoundingClientRect();
+  const pos = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
+    const r = e.currentTarget.getBoundingClientRect();
     return [Math.floor(((e.clientX - r.left) / r.width) * 32), Math.floor(((e.clientY - r.top) / r.height) * 32)];
   };
+  const shapePixels = (a: Point, b: Point): number[] =>
+    tool === "line" ? shapes.line(a, b)
+      : tool === "rect" ? shapes.rect(a, b)
+        : tool === "ellipse" ? shapes.ellipse(a, b)
+          : isStamp(tool) ? shapes.stamp(tool, b, STAMP_RADII[stampSize])
+            : [];
+  const withMirror = (ids: number[]): number[] => mirror ? [...new Set(ids.flatMap((k) => [k, mirrorCol(k)]))] : ids;
   const apply = (x: number, y: number) => {
     if (x < 0 || y < 0 || x > 31 || y > 31) return;
     const base = sheet * 1024;
@@ -134,31 +195,145 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     const i = base + y * 32 + x;
     if (tool === "pick") { setColor(px[i]); setTool("pencil"); return; }
     const v = tool === "erase" ? 15 : color;
-    if (tool === "fill") {
-      const target = px[i];
-      if (target === v) return;
-      remember();
-      const stack = [[x, y]];
-      while (stack.length) {
-        const [cx, cy] = stack.pop()!;
-        if (cx < 0 || cy < 0 || cx > 31 || cy > 31) continue;
-        const k = base + cy * 32 + cx;
-        if (px[k] !== target) continue;
-        px[k] = v;
-        stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+    let changed = false;
+    // With Mirror on, every painted cell also paints its mirror column.
+    const paint = (k: number) => {
+      for (const m of mirror ? [k, mirrorCol(k)] : [k]) {
+        if (px[base + m] === v) continue;
+        px[base + m] = v;
+        changed = true;
+      }
+    };
+    if (tool === "fill-all") {
+      if (px.slice(base, base + 1024).every((p) => p === v)) return;
+      px.fill(v, base, base + 1024);
+      changed = true;
+    } else if (tool === "fill") {
+      const flood = (sx: number, sy: number, target: number) => {
+        const stack = [[sx, sy]];
+        while (stack.length) {
+          const [cx, cy] = stack.pop()!;
+          if (cx < 0 || cy < 0 || cx > 31 || cy > 31) continue;
+          const k = base + cy * 32 + cx;
+          if (px[k] !== target) continue;
+          px[k] = v;
+          changed = true;
+          stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+        }
+      };
+      if (px[i] !== v) flood(x, y, px[i]);
+      // The mirrored seed fills on its own, so two separate areas both fill.
+      if (mirror) {
+        const mx = 31 - x, target = px[base + y * 32 + mx];
+        if (target !== v) flood(mx, y, target);
       }
     } else {
-      if (px[i] === v) return;
-      remember();
-      px[i] = v;
+      // Draw uses a square brush; even sizes grow right and down from the cursor.
+      const n = tool === "pencil" ? BRUSHES[brushSize] : 1;
+      const o = (n - 1) >> 1;
+      for (let dy = 0; dy < n; dy++) {
+        for (let dx = 0; dx < n; dx++) {
+          const bx = x + dx - o, by = y + dy - o;
+          if (bx < 0 || by < 0 || bx > 31 || by > 31) continue;
+          paint(by * 32 + bx);
+        }
+      }
     }
-    setD({ ...d, pixels: px }); setDirty(true);
+    if (!changed) return;
+    remember();
+    commit({ ...d, pixels: px });
+  };
+  // Whole-sheet edits touch only the visible sheet, as in game, and each gesture
+  // is one undo step. `snapshot` is the pixel array from before the gesture.
+  const writeSheet = (next: number[], snapshot: number[]) => {
+    const px = d.pixels.slice();
+    px.splice(sheet * 1024, 1024, ...next);
+    if (!stroke.current) { stroke.current = true; pushHist(snapshot); }
+    commit({ ...d, pixels: px });
+  };
+  const turn = (cw: boolean) => {
+    stroke.current = false;
+    writeSheet(shapes.rotate(d.pixels.slice(sheet * 1024, sheet * 1024 + 1024), cw), d.pixels);
+  };
+  const panTo = (p: Point) => {
+    const g = pan.current;
+    if (!g) return;
+    const dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+    if (dx === g.dx && dy === g.dy) return;
+    g.dx = dx; g.dy = dy;
+    writeSheet(shapes.shift(g.base.slice(sheet * 1024, sheet * 1024 + 1024), dx, dy), g.base);
+  };
+  // A shape is previewed while dragging, then written as one undo step on release.
+  const finishShape = () => {
+    const g = drag.current;
+    drag.current = null;
+    setPreview(null);
+    if (!g) return;
+    const base = sheet * 1024;
+    const px = d.pixels.slice();
+    let changed = false;
+    for (const i of withMirror(shapePixels(g.a, g.b))) {
+      if (px[base + i] !== color) { px[base + i] = color; changed = true; }
+    }
+    if (!changed) return;
+    remember();
+    commit({ ...d, pixels: px });
+  };
+  const down = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    stroke.current = false;
+    const p = pos(e);
+    if (tool === "move") {
+      pan.current = { start: p, base: d.pixels, dx: 0, dy: 0 };
+      return;
+    }
+    if (isShape(tool)) {
+      const at = clampCell(p);
+      drag.current = { a: at, b: at };
+      setPreview(withMirror(shapePixels(at, at)));
+      return;
+    }
+    painting.current = true;
+    apply(p[0], p[1]);
+  };
+  const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (pan.current) panTo(pos(e));
+    else if (drag.current) {
+      drag.current.b = clampCell(pos(e));
+      setPreview(withMirror(shapePixels(drag.current.a, drag.current.b)));
+    } else if (painting.current && (tool === "pencil" || tool === "erase")) apply(...pos(e));
+  };
+  const up = () => {
+    if (drag.current) finishShape();
+    pan.current = null;
+    painting.current = false;
+  };
+  const cancel = () => {
+    drag.current = null;
+    pan.current = null;
+    setPreview(null);
+    painting.current = false;
   };
   const save = async () => {
     await api.setDesignPixels(kind, index, d.info.name, d.palette, d.pixels);
+    clean.current = d;
     setDirty(false); onSaved(); toast("ok", "Design saved");
   };
   const hexc = (c: number[]) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+  const paletteHex = color < 15 ? hexc(d.palette[color]) : "";
+  // Markers survive a pick, but not a palette change from elsewhere (import, custom picker).
+  const game = (bars?.slot === color && gameColor(...bars.at) === paletteHex ? bars.at : null) ?? gameIndex(paletteHex);
+  const at = game ?? ([0, 7, 7] as [number, number, number]);
+  const setBar = (channel: 0 | 1 | 2, i: number) => {
+    const next: [number, number, number] = [at[0], at[1], at[2]];
+    next[channel] = i;
+    const hex = gameColor(...next);
+    const pal = d.palette.slice();
+    pal[color] = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16)) as [number, number, number];
+    setBars({ slot: color, at: next });
+    commit({ ...d, palette: pal });
+  };
   return (
     <Modal title={d.info.name || `Design ${index + 1}`} size="wide" onClose={onClose} icon={<Palette size={18} />} footer={<>
       <MenuButton label="Import / export" items={[
@@ -175,19 +350,52 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
       <div className="grid" style={{ gridTemplateColumns: "auto 1fr", gap: 20, alignItems: "start" }}>
         <div className="col" style={{ gap: 10 }}>
           {sheets > 1 && <Segmented value={sheet} onChange={setSheet} options={SHEETS.map((l, i) => ({ value: i, label: l }))} />}
-          <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", cursor: "crosshair" }}
-            onMouseDown={(e) => { painting.current = true; stroke.current = false; const [x, y] = pos(e); apply(x, y); }}
-            onMouseMove={(e) => { if (painting.current && (tool === "pencil" || tool === "erase")) { const [x, y] = pos(e); apply(x, y); } }}
-            onMouseUp={() => (painting.current = false)} onMouseLeave={() => (painting.current = false)} />
+          <div style={{ position: "relative", width: 448, height: 448, borderRadius: 12, border: "1px solid var(--border)", boxSizing: "content-box" }}>
+            <canvas ref={canvas} width={32} height={32} className="pixel" style={{ width: "100%", height: "100%", display: "block", borderRadius: 12, cursor: tool === "move" ? "grab" : "crosshair" }}
+              onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={cancel} />
+            {grid && <div aria-hidden style={{
+              position: "absolute", inset: 0, borderRadius: 12, pointerEvents: "none",
+              backgroundImage: "linear-gradient(to right, rgba(0,0,0,0.22) 1px, transparent 1px), linear-gradient(to bottom, rgba(0,0,0,0.22) 1px, transparent 1px)",
+              backgroundSize: "3.125% 3.125%",
+            }} />}
+          </div>
+          <div className="row" style={{ gap: 14 }}>
+            <Check checked={grid} onChange={setGrid} label="Grid" title="Show the boundary of every pixel" />
+            <Check checked={mirror} onChange={setMirror} label="Mirror" title="Also paint the mirrored column" />
+            <span className="spacer" />
+            <Button size="sm" icon={<RotateCcw />} title="Rotate this sheet 90° counter-clockwise" onClick={() => turn(false)}>Rotate</Button>
+            <Button size="sm" icon={<RotateCw />} title="Rotate this sheet 90° clockwise" onClick={() => turn(true)} />
+          </div>
         </div>
         <div className="col" style={{ gap: 14 }}>
-          <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { setD({ ...d, info: { ...d.info, name: v } }); setDirty(true); }} /></Field>
+          <Field label="Name" hint="Up to 20 characters"><TextInput value={d.info.name} maxLength={20} onChange={(v) => { commit({ ...d, info: { ...d.info, name: v } }); }} /></Field>
           <Field label="Tool" hint={`${MOD}+Z undo · ${MOD}+Shift+Z redo`}>
-            <Segmented value={tool} onChange={setTool} options={[
-              { value: "pencil", label: "Draw", icon: <Pencil /> }, { value: "fill", label: "Fill", icon: <PaintBucket /> },
-              { value: "pick", label: "Pick", icon: <Pipette /> }, { value: "erase", label: "Erase", icon: <Eraser /> }]} />
+            <div className="col" style={{ gap: 8 }}>
+              <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
+                { value: "pencil", label: "Draw", icon: <Pencil /> }, { value: "fill", label: "Fill", icon: <PaintBucket /> },
+                { value: "fill-all", label: "Fill all", icon: <PaintRoller /> }, { value: "pick", label: "Pick", icon: <Pipette /> },
+                { value: "erase", label: "Erase", icon: <Eraser /> }]} />
+              <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
+                { value: "line", label: "Line", icon: <Slash /> }, { value: "rect", label: "Rect", icon: <Square /> },
+                { value: "ellipse", label: "Ellipse", icon: <Circle /> }, { value: "move", label: "Move", icon: <Move /> }]} />
+              <Segmented value={tool} onChange={(t) => { setTool(t); setPreview(null); }} options={[
+                { value: "circle", label: "Circle", icon: <Disc /> }, { value: "star", label: "Star", icon: <Star /> },
+                { value: "heart", label: "Heart", icon: <Heart /> }]} />
+            </div>
           </Field>
-          <Field label={<><Droplet size={13} /> Palette</>} hint="Click to select · double-click the swatch below to change its color">
+          {tool === "pencil" && (
+            <Field label="Brush size" hint="1×1 · 2×2 · 3×3">
+              <Segmented value={brushSize} onChange={setBrushSize} options={[
+                { value: 0, label: "S" }, { value: 1, label: "M" }, { value: 2, label: "L" }]} />
+            </Field>
+          )}
+          {isStamp(tool) && (
+            <Field label="Stamp size" hint="Filled with the selected color; drag to place">
+              <Segmented value={stampSize} onChange={setStampSize} options={[
+                { value: 0, label: "S" }, { value: 1, label: "M" }, { value: 2, label: "L" }]} />
+            </Field>
+          )}
+          <Field label={<><Droplet size={13} /> Palette</>} hint="Click to select · edit the selected color below">
             <div className="row" style={{ gap: 6, alignItems: "center" }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 36px)", gap: 6 }}>
                 {d.palette.map((c, i) => (
@@ -199,12 +407,21 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
                 style={{ width: 36, height: 36, borderRadius: 9, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: color === 15 ? "3px solid var(--accent)" : "1px solid var(--border-strong)", boxShadow: color === 15 ? "0 0 0 3px var(--accent-soft)" : undefined }} />
             </div>
           </Field>
+          {color < 15 && (
+            <Field label={<><Droplet size={13} /> Game color</>} hint="Hue · vividness · brightness, as in the design editor">
+              <div className="col" style={{ gap: 3 }}>
+                <Strip label="Hue" round colors={HUE_COLORS} at={game?.[0]} onPick={(i) => setBar(0, i)} />
+                <Strip label="Vividness" colors={Array.from({ length: VIVID_COUNT }, (_, i) => gameColor(at[0], i, at[2]))} at={game?.[1]} onPick={(i) => setBar(1, i)} />
+                <Strip label="Brightness" colors={Array.from({ length: BRIGHT_COUNT }, (_, i) => gameColor(at[0], at[1], i))} at={game?.[2]} onPick={(i) => setBar(2, i)} />
+              </div>
+            </Field>
+          )}
           <div className="row">
             {color < 15 ? (
-              <input type="color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
+              <input type="color" title="Custom color" value={hexc(d.palette[color])} style={{ width: 48, height: 32, border: 0, background: "none" }}
                 onChange={(e) => {
                   const v = e.target.value; const rgb: [number, number, number] = [1, 3, 5].map((k) => parseInt(v.slice(k, k + 2), 16)) as [number, number, number];
-                  const pal = d.palette.slice(); pal[color] = rgb; setD({ ...d, palette: pal }); setDirty(true);
+                  const pal = d.palette.slice(); pal[color] = rgb; commit({ ...d, palette: pal });
                 }} />
             ) : (
               <span style={{ width: 48, height: 32, borderRadius: 6, backgroundImage: CHECKER, backgroundSize: "12px 12px", border: "1px solid var(--border-strong)" }} />

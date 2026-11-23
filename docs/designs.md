@@ -57,17 +57,67 @@ alone for the island flag slot.
 
 ## Editor behaviour
 
-- Tools: Draw, Fill, Pick, Erase. Transparency is selectable as a colour (checkerboard swatch to
-  the right of the palette), so Draw and Fill can paint empty space; Pick selects it from an empty
-  pixel.
+- Tools: Draw (1×1 / 2×2 / 3×3 brush), Fill (flood the clicked area), Fill all (the whole sheet, one
+  undo step), Pick and Erase, plus shapes — Line, Rect and Ellipse (1 px outlines), and the filled
+  stamps Circle, Star and Heart in three sizes. Shapes are previewed while dragging and
+  written as one undo step on release; the ellipse is inscribed in the dragged box, so a non-square
+  drag gives an ellipse and a square drag a circle. The stamps follow the cursor while dragging and
+  are centred on the release pixel. Stamp radii are 2 / 5 / 16 px (in-game diameters 4 / 10 / 36;
+  the large stamp is capped at the 32 px sheet). Rasterizers live in `src/lib/shapes.ts`.
+- Transparency is selectable as a colour (checkerboard swatch to the right of the palette), so Draw,
+  Fill and the shape tools can paint empty space; Pick selects it from an empty pixel.
+- Grid (on by default): a thin line on every pixel boundary, drawn as a CSS overlay on the 448 px
+  canvas. View only, never written to the save.
+- Mirror (off by default): every painting tool also paints the mirrored column, `x → 31−x`, so the
+  axis sits between columns 15 and 16. Applies to Draw, Erase, Fill (each seed floods its own area),
+  Fill All, Line, Rect, Ellipse and the stamps, and the shape preview shows the mirrored result while
+  dragging. The game's guide cross also has a horizontal line, but only left↔right is mirrored here.
+  Both toggles are per editor session and reset when the editor closes.
+- Whole-sheet edits act on the visible sheet only (PRO sheets stay independent), as in game:
+  - Rotate: the two buttons beside Grid/Mirror turn the sheet 90° counter-clockwise / clockwise
+    (the game's ZL/ZR). The 32×32 square wraps, so nothing is lost; each press is one undo step.
+  - Move: the Move tool drags the whole sheet by whole pixels. Content that leaves one edge
+    reappears on the opposite edge while dragging, so a drag of one row up moves the top row to
+    the bottom. Offsets are recomputed from the sheet captured at pointer-down, so the drag never
+    compounds rounding; the whole drag is one undo step. Grid and Mirror do not apply.
 - Undo/redo: `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`. History is pixel-only, one step per
   stroke, 64 steps, and resets whenever a design is reloaded or imported. Shortcuts are ignored
   while a text input has focus.
+- Save design is enabled only while the design differs from what was loaded or last saved (name,
+  palette or pixels). Undoing every stroke, rotating four times or dragging the canvas back leaves
+  it disabled, so an unchanged design is never rewritten.
 - PNG: import samples 32×32 (64×64 for PRO, a 2×2 grid of sheets), quantizes to 15 colours
   (median cut + k-means, nearest-colour mapping) and treats alpha < 128 as transparent. Export
   renders RGBA and scales by an integer factor (PRO is written as a 2×2 sheet grid).
 - Saving a design also clears the slot's "edited" flag (`patterns_edit_flag_start` /
   `patterns_pro_edit_flag_start`) so the game picks up the new name.
+
+## Colour space (hue / vividness / brightness)
+
+The game's Change Color menu is a 30 × 15 × 15 grid: 30 hues, 15 vividness steps, 15 brightness
+steps, 6750 colours. The save only stores the resulting RGB triple per palette slot, so this table
+exists purely so the UI can offer the same picker as the game; nothing about the file layout
+depends on it. Implementation: `src/lib/designColors.ts`.
+
+The table was measured, not guessed: one design per row with a colour per palette slot, dumped and
+read back from the palette bytes (the game stores the whole palette, including colours no pixel
+uses). Findings:
+
+- **Hue** (30): the anchors are stored literally, byte-exact — this is the part users copy from
+  in-game tutorials, so it must match exactly. The strip runs red → yellow → green → cyan → blue →
+  magenta → red; every anchor has channel values of only `0f`, `3a`, `64`, `8f`, `ba` or `e5`.
+- **Brightness** (15): scales every channel; the brightest channel is 229 at step 15 and 20 at
+  step 1, linear in between (`(20 + 209·b/14) / 229`).
+- **Vividness** (15): lerps every channel toward the hue's brightest channel, i.e. step 1 is grey
+  and step 15 is the hue anchor.
+- The two ramps reproduce the measured rows to within one 8-bit unit, and reproduced 150 of the
+  165 distinct colours in a real island's saved palettes exactly or within 1. The remainder are
+  outside the game's range (channel values the grid cannot produce), i.e. imported artwork.
+
+The picker shows one strip per channel, each cell painted with the colour that step actually
+produces, and writes the chosen RGB into the selected palette slot. A slot whose colour is not in
+the grid (imported or hand-picked) gets no strip marker; the native colour picker stays available
+as a custom colour escape hatch.
 
 ## References
 

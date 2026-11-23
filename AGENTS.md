@@ -150,6 +150,11 @@ Branches (2026-11-22): the fork holds `master` only. `origin/master` was `da1ffb
 painting). Local `master` tracks `origin/master`; `windows-build`, `design-pattern-qol` and
 `map-editor-qol` were merged and deleted locally and on `origin`.
 
+`design-shape-tools` is the open branch for the design editor (shape tools, Fill all, brush sizes,
+pixel-grid overlay, left/right mirror, canvas rotate and wrap-drag, and the game's
+hue/vividness/brightness colour picker — see `docs/designs.md`). It is pushed to `origin` with no
+PR yet; `master` does not have it.
+
 On 2026-11-21 the waterfall hot fix (three commits: recessed falls and the measured model table, the
 `Fall100`/`River4C` follow-up, the verification docs) was committed and pushed straight to
 `master` on `origin` with no PR. `save/` in the working tree is that day's dump, acre G6 being the
