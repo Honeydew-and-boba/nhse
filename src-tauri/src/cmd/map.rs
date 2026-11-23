@@ -5,6 +5,7 @@ use crate::{with_save, with_save_mut};
 use nhse_core::editing::fieldtools::{self, Arrangement, ClearKind};
 use nhse_core::editing::formats;
 use nhse_core::map::field::Plaza;
+use nhse_core::map::paint;
 use nhse_core::map::render::{encode_png, render_terrain, TerrainView};
 use nhse_core::map::terrain::{TerrainTile, TILES_H, TILES_W};
 use nhse_core::map::ItemGrid;
@@ -53,6 +54,25 @@ pub fn terrain(state: State<AppState>) -> CmdResult<Response> {
 pub fn set_terrain(state: State<AppState>, request: Request) -> CmdResult<()> {
     let body = raw_body(&request)?;
     with_save_mut!(state, |s| Ok(s.set_terrain_bytes(body)?))
+}
+
+/// Paints or clears the road layer (default paths) on terrain tiles. `family` is a
+/// `road_family` name (`soil`, `stone`, …); leave it out to clear.
+#[tauri::command]
+pub fn paint_road(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    family: Option<String>,
+) -> CmdResult<usize> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let targets: Vec<(usize, usize)> = tiles.iter().map(|p| (p[0], p[1])).collect();
+        let n = paint::paint_road(&mut t, TILES_W, TILES_H, &targets, family.as_deref());
+        if n > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(n)
+    })
 }
 
 /// Rendered terrain + acre templates (PNG), `px` pixels per terrain tile.

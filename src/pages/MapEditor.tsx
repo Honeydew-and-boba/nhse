@@ -5,7 +5,7 @@ import { ItemEditor } from "../components/ItemEditor";
 import { ItemPicker } from "../components/ItemPicker";
 import { Badge, Button, Callout, Check, Field, Loading, MenuButton, NumberInput, Segmented, Select, Tabs } from "../components/ui";
 import { enumOptions, prettify } from "../components/Widgets";
-import { api, type Arrangement, type Building, type ClearKind, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
+import { api, type Arrangement, type Building, type ClearKind, type DesignInfo, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
 import { EXT_ID, NONE_ID, asset, buildingDoors, buildingFootprint, buildingMovable, buildingRects, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
@@ -15,8 +15,21 @@ import { MOD } from "../lib/util";
 type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
 type Pick = { kind: "building"; index: number } | null;
+type GroundBrush = { kind: "path"; family: string } | { kind: "design"; index: number } | { kind: "erase" };
+type Snapshot = { layer: number; tiles: Item[] } | { ground: { terrain: Uint8Array; designs: number[] } };
 interface View { s: number; x: number; y: number }
 
+/** Default path families, with the colours the terrain renderer uses. */
+const PATHS = [
+  { id: "soil", label: "Dirt", color: "#c49662" },
+  { id: "stone", label: "Stone", color: "#9e9ea0" },
+  { id: "brick", label: "Brick", color: "#b2463c" },
+  { id: "darksoil", label: "Dark dirt", color: "#785234" },
+  { id: "pattern", label: "Arched tile", color: "#ece6d2" },
+  { id: "sand", label: "Sand", color: "#e2c48c" },
+  { id: "tile", label: "Tile", color: "#5e84b2" },
+  { id: "wood", label: "Wood", color: "#aa784a" },
+];
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
 const PLAZA_W = 24, PLAZA_H = 20; // 12×10 terrain tiles
 const MIN_S = 1, MAX_S = 40;
@@ -103,12 +116,17 @@ export default function MapEditor() {
   const [selTile, setSelTile] = useState<[number, number] | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [brush, setBrush] = useState<Item>({ ...NONE_ITEM });
+  const [ground, setGround] = useState<GroundBrush | null>(null);
+  const [patterns, setPatterns] = useState<DesignInfo[] | null>(null);
+  const [stroke, setStroke] = useState<[number, number][]>([]);
+  const strokeTiles = useRef(new Set<string>());
+  const groundBefore = useRef<{ designs: number[]; terrain: Promise<Uint8Array> } | null>(null);
   const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
-  const undo = useRef<{ layer: number; tiles: Item[] }[]>([]);
-  const redo = useRef<{ layer: number; tiles: Item[] }[]>([]);
+  const undo = useRef<Snapshot[]>([]);
+  const redo = useRef<Snapshot[]>([]);
   const clip = useRef<{ w: number; h: number; tiles: Item[] } | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -155,6 +173,13 @@ export default function MapEditor() {
     setView({ s, x: (r.width - MAP_W * s) / 2, y: (r.height - MAP_H * s) / 2 });
   }, [loaded]);
 
+  // non-empty normal designs for the ground palette; PRO designs cannot be placed on the ground
+  // in game, so they are never offered
+  useEffect(() => {
+    if (!loaded) return;
+    api.designs("normal").then((d) => setPatterns(d.filter((p) => !p.empty))).catch(() => setPatterns([]));
+  }, [loaded, rev]);
+
   const grid = (l = layer) => new Grid(L.width, L.height, layers.current[l]);
   const rgb = (id: number): [number, number, number] => {
     let c = rgbCache.get(id);
@@ -199,9 +224,20 @@ export default function MapEditor() {
     return syncChain.current;
   };
   const snapshot = (l = layer) => { undo.current.push({ layer: l, tiles: layers.current[l].slice() }); if (undo.current.length > 100) undo.current.shift(); redo.current = []; };
-  const doUndo = (from: typeof undo, to: typeof undo) => {
+  const doUndo = async (from: typeof undo, to: typeof redo) => {
     const s = from.current.pop();
     if (!s) return;
+    if ("ground" in s) {
+      to.current.push({ ground: { terrain: await api.terrain(), designs: meta?.design_tiles.slice() ?? [] } });
+      try {
+        await api.setTerrain(s.ground.terrain);
+        await api.setDesignTiles(s.ground.designs);
+        setMeta((m) => (m ? { ...m, design_tiles: s.ground.designs } : m));
+        await loadTerrain();
+        touch();
+      } catch (e) { toast("error", "Could not undo the ground change", String(e)); }
+      return;
+    }
     to.current.push({ layer: s.layer, tiles: layers.current[s.layer].slice() });
     layers.current[s.layer] = s.tiles;
     changed(s.layer); sync(s.layer);
@@ -223,6 +259,17 @@ export default function MapEditor() {
     return [mx - L.offset_x, my - L.offset_y];
   };
   const inLayer = (x: number, y: number) => x >= 0 && y >= 0 && x < L.width && y < L.height;
+  /**
+   * Terrain tile that contains a layer tile, or null outside the terrain layer. Terrain is
+   * rendered over the whole map but its data covers the middle 7×6 acres (16 tiles in).
+   */
+  const terrainTile = (x: number, y: number): [number, number] | null => {
+    if (!meta) return null;
+    const tx = Math.floor((x + L.offset_x) / 2) - 16;
+    const ty = Math.floor((y + L.offset_y) / 2) - 16;
+    const [tw, th] = meta.terrain_dims;
+    return tx >= 0 && ty >= 0 && tx < tw && ty < th ? [tx, ty] : null;
+  };
 
   // ------------------------------------------------------------- drawing
   useEffect(() => {
@@ -265,6 +312,26 @@ export default function MapEditor() {
           ctx.fillRect(dx, dy, d2, d2);
           ctx.strokeStyle = "rgba(255,61,161,0.75)"; ctx.lineWidth = 1;
           ctx.strokeRect(dx + 0.5, dy + 0.5, d2 - 1, d2 - 1);
+        }
+      }
+      // ground-painting preview: paths and designs sit under the item layers
+      if (stroke.length) {
+        const d2 = 2 * s;
+        for (const [lx, ly] of stroke) {
+          if (ground?.kind === "design") {
+            const dx = ox + (lx >> 1) * d2, dy = oy + (ly >> 1) * d2;
+            const img = designImage(ground.index);
+            if (img) { ctx.globalAlpha = 0.85; ctx.drawImage(img, dx, dy, d2, d2); ctx.globalAlpha = 1; }
+            else { ctx.fillStyle = "rgba(255,61,161,0.3)"; ctx.fillRect(dx, dy, d2, d2); }
+          } else {
+            const t = terrainTile(lx, ly);
+            if (!t) continue;
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = ground?.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.color ?? "#fff" : "rgba(255,77,109,0.55)";
+            // terrain data tile 0 is drawn at image tile 16 (one acre of sea border)
+            ctx.fillRect(px + (t[0] + 16) * d2, py + (t[1] + 16) * d2, d2, d2);
+            ctx.globalAlpha = 1;
+          }
         }
       }
       if (show.other) { ctx.globalAlpha = 0.3; ctx.drawImage(layerImage(1 - layer), ox, oy, L.width * s, L.height * s); }
@@ -400,8 +467,14 @@ export default function MapEditor() {
       // hover
       if (hover && inLayer(hover[0], hover[1])) {
         let [fw, fh] = [1, 1];
+        let [hx, hy] = hover;
         let ok = true;
-        if (tool === "place" && brush.id !== NONE_ID) {
+        if (tool === "place" && ground) {
+          // ground brushes work in one-terrain-tile (2×2 item tile) blocks
+          [fw, fh] = [2, 2];
+          hx = hover[0] & ~1; hy = hover[1] & ~1;
+          if (ground.kind !== "design" && !terrainTile(hx, hy)) ok = false;
+        } else if (tool === "place" && brush.id !== NONE_ID) {
           [fw, fh] = footprint(gd, brush);
           ok = !settings?.map_prevent_overlap || grid().check(gd, brush, hover[0], hover[1]) === "ok";
           if (hover[0] + fw > L.width || hover[1] + fh > L.height) ok = false;
@@ -410,8 +483,8 @@ export default function MapEditor() {
         }
         ctx.strokeStyle = ok ? "rgba(255,255,255,0.95)" : "#ff4d6d"; ctx.lineWidth = 1.5;
         ctx.fillStyle = ok ? "rgba(255,255,255,0.18)" : "rgba(255,77,109,0.25)";
-        ctx.fillRect(ox + hover[0] * s, oy + hover[1] * s, fw * s, fh * s);
-        ctx.strokeRect(ox + hover[0] * s + 0.5, oy + hover[1] * s + 0.5, fw * s - 1, fh * s - 1);
+        ctx.fillRect(ox + hx * s, oy + hy * s, fw * s, fh * s);
+        ctx.strokeRect(ox + hx * s + 0.5, oy + hy * s + 0.5, fw * s - 1, fh * s - 1);
       }
     };
     frame = requestAnimationFrame(draw);
@@ -423,7 +496,7 @@ export default function MapEditor() {
   const buildingName = (k: number) => prettify((gd.enums.BuildingType ?? []).find(([, v]) => v === k)?.[0] ?? `Type ${k}`);
 
   // ------------------------------------------------------------- interaction
-  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
+  const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect" | "ground"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
   const bdrag = useRef<{ index: number; startX: number; startY: number; mx: number; my: number; next: Building[] | null } | null>(null);
   const pasteMode = useRef(false);
   const space = useRef(false);
@@ -453,6 +526,39 @@ export default function MapEditor() {
   };
   const eraseAt = (x: number, y: number) => inLayer(x, y) && !!grid().removeAt(gd, x, y);
 
+  const addGroundTile = (x: number, y: number) => {
+    const key = `${x},${y}`;
+    if (strokeTiles.current.has(key)) return false;
+    strokeTiles.current.add(key);
+    setStroke((s) => [...s, [x, y]]);
+    return true;
+  };
+
+  /** Commits a ground stroke: one command for paths, then the design grid. */
+  const commitGround = async (tiles: [number, number][], brush: GroundBrush) => {
+    const before = groundBefore.current;
+    groundBefore.current = null;
+    if (!before || !tiles.length || !meta) return;
+    const uniq = (a: [number, number][]) => [...new Map(a.map((p) => [p.join(","), p] as [string, [number, number]])).values()];
+    const designs = uniq(tiles.map(([x, y]) => [x >> 1, y >> 1] as [number, number]));
+    const terrain = uniq(tiles.map(([x, y]) => terrainTile(x, y)).filter((p): p is [number, number] => !!p));
+    const dh = meta.design_dims[1];
+    const next = meta.design_tiles.slice();
+    for (const [x, y] of designs) next[x * dh + y] = brush.kind === "design" ? brush.index : 0xf800;
+    const designsChanged = designs.some(([x, y]) => next[x * dh + y] !== meta.design_tiles[x * dh + y]);
+    if (!terrain.length && !designsChanged) return;
+    try {
+      const prevTerrain = await before.terrain;
+      await api.paintRoad(terrain, brush.kind === "path" ? brush.family : null);
+      if (designsChanged) { await api.setDesignTiles(next); setMeta({ ...meta, design_tiles: next }); }
+      await loadTerrain();
+      undo.current.push({ ground: { terrain: prevTerrain, designs: before.designs } });
+      if (undo.current.length > 100) undo.current.shift();
+      redo.current = [];
+      touch();
+    } catch (e) { toast("error", "Could not paint the ground", String(e)); }
+  };
+
   const onDown = (e: React.PointerEvent) => {
     const r = canvas.current!.getBoundingClientRect();
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
@@ -464,6 +570,14 @@ export default function MapEditor() {
       const mx = tx + L.offset_x, my = ty + L.offset_y;
       if (pick.kind === "building" && buildings) { const next = buildings.slice(); next[pick.index] = { ...next[pick.index], x: Math.max(0, mx), y: Math.max(0, my) }; setBuildings(next); api.setBuildings(next).then(touch); }
       setPick(null);
+      return;
+    }
+    if (tool === "place" && ground) {
+      strokeTiles.current = new Set();
+      setStroke([]);
+      groundBefore.current = { designs: meta!.design_tiles.slice(), terrain: api.terrain() };
+      drag.current = { mode: "ground", sx: cx, sy: cy, vx: 0, vy: 0, tx, ty, dirty: false, last: "" };
+      if (inLayer(tx, ty)) addGroundTile(tx, ty);
       return;
     }
     if (tool === "inspect" && show.buildings && buildings) {
@@ -529,6 +643,7 @@ export default function MapEditor() {
       if (x1 >= x0 && y1 >= y0) setRect({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
       return;
     }
+    if (d.mode === "ground") { if (inLayer(tx, ty)) addGroundTile(tx, ty); return; }
     const key = `${tx},${ty}`;
     if (key === d.last) return;
     d.last = key;
@@ -546,6 +661,13 @@ export default function MapEditor() {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
+    if (d.mode === "ground") {
+      const tiles = [...strokeTiles.current].map((k) => k.split(",").map(Number) as [number, number]);
+      strokeTiles.current = new Set();
+      setStroke([]);
+      if (ground) commitGround(tiles, ground);
+      return;
+    }
     if (d.mode === "paint" || d.mode === "erase") {
       if (d.dirty) sync(layer); else undo.current.pop();
     }
@@ -713,10 +835,10 @@ export default function MapEditor() {
       <div className="col" style={{ gap: 16 }}>
         <div className="col" style={{ gap: 8 }}>
           <div className="row"><div className="label" style={{ flex: 1 }}>Brush</div><span className="tiny faint"><span className="kbd">B</span> place · <span className="kbd">R</span> rotate</span></div>
-          <ItemEditor item={brush} onChange={setBrush} />
+          <ItemEditor item={brush} onChange={(it) => { setGround(null); setBrush(it); }} />
           <div className="row">
             <Button size="sm" icon={<RotateCw />} onClick={() => setBrush({ ...brush, system: (brush.system & ~3) | (((brush.system & 3) + 1) & 3) })}>Rotate</Button>
-            <Button size="sm" icon={<Brush />} variant={tool === "place" ? "primary" : "default"} onClick={() => setTool("place")}>Paint with it</Button>
+            <Button size="sm" icon={<Brush />} variant={tool === "place" && !ground ? "primary" : "default"} onClick={() => { setGround(null); setTool("place"); }}>Paint with it</Button>
           </div>
         </div>
         <div className="divider" />
@@ -740,13 +862,53 @@ export default function MapEditor() {
                   changed(layer); sync(layer);
                 }} />
                 <div className="row">
-                  <Button size="sm" icon={<Brush />} onClick={() => { setBrush(selItem); setTool("place"); }}>Use as brush</Button>
+                  <Button size="sm" icon={<Brush />} onClick={() => { setGround(null); setBrush(selItem); setTool("place"); }}>Use as brush</Button>
                   <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => { snapshot(); grid().removeAt(gd, selTile[0], selTile[1]); changed(layer); sync(layer); setSelTile(null); }}>Remove</Button>
                 </div>
               </>
             )}
           </div>
         ) : <div className="faint small">Use <b>Select</b> (<span className="kbd">V</span>) and click a tile to inspect and edit the item on it.</div>}
+        <div className="divider" />
+        <div className="col" style={{ gap: 8 }}>
+          <div className="row"><div className="label" style={{ flex: 1 }}>Ground</div><span className="tiny faint">paths and designs</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+            {PATHS.map((p) => (
+              <button key={p.id} title={`Paint ${p.label}`} onClick={() => { setGround({ kind: "path", family: p.id }); setTool("place"); }}
+                style={{ padding: "0 0 3px", borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
+                  border: ground?.kind === "path" && ground.family === p.id ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
+                <span style={{ display: "block", height: 14, background: p.color }} />
+                <span className="tiny" style={{ display: "block", paddingTop: 2 }}>{p.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="row">
+            <Button size="sm" variant={ground?.kind === "erase" ? "primary" : "default"} icon={<Eraser />} onClick={() => { setGround({ kind: "erase" }); setTool("place"); }}>Erase ground</Button>
+            {ground && <Button size="sm" variant="ghost" onClick={() => setGround(null)}>Stop</Button>}
+          </div>
+          <div className="label" style={{ marginTop: 4 }}>My designs</div>
+          {patterns === null ? <div className="tiny faint">Loading…</div> : patterns.length === 0 ? (
+            <div className="tiny faint">No saved designs. Draw one on the Designs page first.</div>
+          ) : (
+            <div style={{ flex: "none", maxHeight: 170, overflowY: "auto" }}>
+              {/* the panel is a flex column; without this wrapper the grid rows get squeezed instead of scrolling */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                {patterns.map((p) => (
+                  <button key={p.index} title={p.name || `Design ${p.index + 1}`} onClick={() => { setGround({ kind: "design", index: p.index }); setTool("place"); }}
+                    style={{ padding: 0, borderRadius: 8, overflow: "hidden", cursor: "pointer", background: "var(--card-2)",
+                      border: ground?.kind === "design" && ground.index === p.index ? "2px solid var(--accent)" : "1px solid var(--border)" }}>
+                    <img src={asset(`design/normal/${p.index}?r=${designEpoch}`)} alt="" style={{ display: "block", width: "100%", aspectRatio: "1", imageRendering: "pixelated" }} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="tiny faint">
+            {ground
+              ? <>Painting <b>{ground.kind === "path" ? PATHS.find((p) => p.id === ground.family)?.label : ground.kind === "design" ? "a custom design" : "the ground away"}</b>. Drag on the map; pick an item above to place items again.</>
+              : <>Click a path or design, then drag on the map. Default paths join up automatically. Painting one clears the other. PRO designs can't be placed on the ground in game, so they aren't offered.</>}
+          </div>
+        </div>
         <div className="divider" />
         <div className="tiny faint" style={{ lineHeight: 1.7 }}>
           <span className="kbd">V</span> select · <span className="kbd">B</span> place · <span className="kbd">E</span> erase · <span className="kbd">M</span> area · <span className="kbd">H</span> pan · <span className="kbd">1</span>/<span className="kbd">2</span> layer · <span className="kbd">{MOD}Z</span> undo · <span className="kbd">{MOD}C</span>/<span className="kbd">{MOD}V</span> copy/paste area
