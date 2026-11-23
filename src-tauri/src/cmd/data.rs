@@ -7,6 +7,10 @@ use nhse_core::data::items::{
 use nhse_core::data::tables::{enum_name, tables, FlagDef, NO_COLOR};
 use nhse_core::data::{strings, GameStrings};
 use nhse_core::map::render::item_color_table;
+use nhse_core::structs::building::{
+    body as building_body, doors as door_rects, footprint as building_footprint,
+    movable as building_movable,
+};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use tauri::State;
@@ -63,6 +67,15 @@ pub struct GameData {
     /// Footprint (w, h) in field tiles per item id, flattened `[w0, h0, w1, h1, …]`.
     pub sizes: Vec<u8>,
     pub field_items: Vec<FieldItemInfo>,
+    /// Plot size (width, height) in terrain tiles (16 per acre) per building kind.
+    pub building_sizes: BTreeMap<u16, (u16, u16)>,
+    /// Entrance parts per building kind, relative to the centre in item tiles: `[dx, dy, w, h]`.
+    pub building_doors: BTreeMap<u16, Vec<(i16, i16, u16, u16)>>,
+    /// Built parts per building kind, relative to the centre in item tiles: `[dx, dy, w, h]`.
+    /// Empty means "the whole plot from `building_sizes`".
+    pub building_bodies: BTreeMap<u16, Vec<(i16, i16, u16, u16)>>,
+    /// Building kinds the game lets the player move.
+    pub movable_buildings: Vec<u16>,
     pub villagers: Vec<VillagerInfo>,
     pub enums: BTreeMap<String, Vec<(String, i64)>>,
     pub recipes: Vec<(u16, u16)>,
@@ -206,6 +219,30 @@ pub fn game_data(state: State<AppState>, lang: Option<String>) -> CmdResult<Game
                 color: fc.get(&f.id).copied().unwrap_or(0x006400),
             })
             .collect(),
+        building_sizes: (1..=42).map(|k| (k, building_footprint(k))).collect(),
+        building_doors: (1..=42)
+            .map(|k| {
+                (
+                    k,
+                    door_rects(k)
+                        .iter()
+                        .map(|d| (d.dx, d.dy, d.w, d.h))
+                        .collect(),
+                )
+            })
+            .collect(),
+        building_bodies: (1..=42)
+            .map(|k| {
+                (
+                    k,
+                    building_body(k)
+                        .iter()
+                        .map(|b| (b.dx, b.dy, b.w, b.h))
+                        .collect(),
+                )
+            })
+            .collect(),
+        movable_buildings: (1..=42).filter(|&k| building_movable(k)).collect(),
         villagers,
         enums: enum_list
             .iter()

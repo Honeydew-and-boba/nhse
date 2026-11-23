@@ -8,17 +8,17 @@ import { enumOptions, prettify } from "../components/Widgets";
 import { api, type Arrangement, type Building, type ClearKind, type DumpKind, type Item, type MapMeta, type Rect } from "../lib/api";
 import { F, pickFile, saveFile } from "../lib/dialog";
 import { Grid, NONE_ITEM, readItems, writeItems } from "../lib/grid";
-import { EXT_ID, NONE_ID, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
+import { EXT_ID, NONE_ID, asset, buildingDoors, buildingFootprint, buildingMovable, buildingRects, footprint, hex, itemColor, itemLabel, itemSprite, variantOf } from "../lib/items";
 import { useGD, useStore } from "../lib/store";
 import { MOD } from "../lib/util";
 
 type Tool = "inspect" | "place" | "erase" | "rect" | "pan";
 type Panel = "tile" | "bulk" | "buildings" | "island" | "dumps";
-type Pick = { kind: "building"; index: number } | { kind: "plaza" } | null;
+type Pick = { kind: "building"; index: number } | null;
 interface View { s: number; x: number; y: number }
 
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
-const PLAZA_W = 12, PLAZA_H = 10;
+const PLAZA_W = 24, PLAZA_H = 20; // 12×10 terrain tiles
 const MIN_S = 1, MAX_S = 40;
 const CLEAR_KINDS: [ClearKind, string][] = [
   ["weeds", "Weeds"], ["branches", "Tree branches"], ["stones", "Stones & rocks"], ["shells", "Shells"], ["flowers", "Flowers"], ["bushes", "Bushes"],
@@ -26,6 +26,65 @@ const CLEAR_KINDS: [ClearKind, string][] = [
 ];
 
 const rgbCache = new Map<number, [number, number, number]>();
+
+/** Four-way "drag me" badge: dark disc, white arrows. */
+const drawMoveBadge = (ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number) => {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(27,27,27,0.92)"; ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.14); ctx.stroke();
+  const a = r * 0.6, h = Math.max(1.5, r * 0.3);
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(1, r * 0.2); ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(cx - a, cy); ctx.lineTo(cx + a, cy);
+  ctx.moveTo(cx, cy - a); ctx.lineTo(cx, cy + a);
+  ctx.stroke();
+  ctx.lineCap = "butt";
+  ctx.fillStyle = "#fff";
+  for (const [sx, sy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * a, cy + sy * a);
+    ctx.lineTo(cx + sx * a - sx * h - sy * h * 0.8, cy + sy * a - sy * h + sx * h * 0.8);
+    ctx.lineTo(cx + sx * a - sx * h + sy * h * 0.8, cy + sy * a - sy * h - sx * h * 0.8);
+    ctx.closePath(); ctx.fill();
+  }
+};
+
+/**
+ * A measured entrance: a translucent plate marks the door zone (and the drag hit area), and a
+ * one-terrain-tile door glyph with a drag badge sits in its middle.
+ */
+const drawDoorZone = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, s: number, hot: boolean, glyph = true) => {
+  ctx.fillStyle = hot ? "rgba(255,214,64,0.30)" : "rgba(255,214,64,0.16)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = hot ? "rgba(255,214,64,0.95)" : "rgba(255,214,64,0.55)";
+  ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.setLineDash([]);
+  if (!glyph) return;
+  const d = Math.min(2 * s, w * 0.92, h * 0.92); // one terrain tile is 2 item tiles
+  const cx = x + w / 2, cy = y + h / 2;
+  if (d >= 20) {
+    const gw = d * 0.6, gh = d * 0.86;
+    ctx.fillStyle = "rgba(255,246,214,0.95)";
+    ctx.fillRect(cx - gw / 2, cy - gh / 2, gw, gh);
+    ctx.strokeStyle = "rgba(20,20,20,0.8)"; ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - gw / 2 + 0.5, cy - gh / 2 + 0.5, gw - 1, gh - 1);
+    drawMoveBadge(ctx, cx, cy, Math.max(4, d * 0.17));
+  } else if (d >= 8) {
+    drawMoveBadge(ctx, cx, cy, Math.max(3, d * 0.28));
+  }
+};
+
+/** Fill colour per building category: houses, villagers, shops, civic, campsite, transport, special. */
+const buildingColor = (kind: number): [number, number, number] => {
+  if (kind <= 8) return [91, 140, 255];
+  if (kind <= 18) return [43, 182, 163];
+  if (kind === 19 || kind === 24) return [211, 61, 61];
+  if (kind === 20 || kind === 21) return [156, 107, 255];
+  if (kind === 25) return [255, 159, 67];
+  if (kind === 22 || kind === 23 || kind === 26 || kind === 27) return [136, 153, 170];
+  return [226, 112, 138];
+};
 
 export default function MapEditor() {
   const gd = useGD();
@@ -44,7 +103,7 @@ export default function MapEditor() {
   const [selTile, setSelTile] = useState<[number, number] | null>(null);
   const [rect, setRect] = useState<Rect | null>(null);
   const [brush, setBrush] = useState<Item>({ ...NONE_ITEM });
-  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true });
+  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
@@ -55,6 +114,10 @@ export default function MapEditor() {
   const wrap = useRef<HTMLDivElement>(null);
   const layerCanvas = useRef<(HTMLCanvasElement | null)[]>([null, null]);
   const sprites = useRef(new Map<string, HTMLImageElement | null>());
+  /** Thumbnails for placed ground designs, keyed by normal design index. */
+  const designs = useRef(new Map<number, HTMLImageElement | null>());
+  /** Cache-busts design URLs once per mount so an edited design is reloaded. */
+  const designEpoch = useRef(Date.now()).current;
   const syncChain = useRef<Promise<unknown>>(Promise.resolve());
   const [loaded, setLoaded] = useState(false);
   // side panel state lives here so it survives the frequent re-renders caused by the canvas
@@ -118,6 +181,18 @@ export default function MapEditor() {
     return c;
   };
   const changed = (l: number) => { layerCanvas.current[l] = null; setVer((v) => v + 1); };
+  /** Loads a normal design thumbnail once; null while it loads (or if it fails). */
+  const designImage = (index: number) => {
+    let img = designs.current.get(index);
+    if (img === undefined) {
+      const im = new Image();
+      designs.current.set(index, null);
+      im.onload = () => { designs.current.set(index, im); setVer((v) => v + 1); };
+      im.src = asset(`design/normal/${index}?r=${designEpoch}`);
+      img = null;
+    }
+    return img;
+  };
   const sync = (l: number) => {
     const bytes = writeItems(layers.current[l]);
     syncChain.current = syncChain.current.then(() => api.setFieldLayer(l, bytes)).then(touch).catch((e) => toast("error", "Could not save map changes", String(e)));
@@ -167,8 +242,30 @@ export default function MapEditor() {
       const ox = px + L.offset_x * s, oy = py + L.offset_y * s;
       if (terrain) ctx.drawImage(terrain, 0, 0, terrain.width, terrain.height, px, py, MAP_W * s, MAP_H * s);
       if (show.plaza && meta) {
-        ctx.fillStyle = "rgba(188,143,143,0.55)";
+        ctx.fillStyle = "rgba(150,155,165,0.35)";
         ctx.fillRect(px + meta.plaza.x * s, py + meta.plaza.z * s, PLAZA_W * s, PLAZA_H * s);
+      }
+      // placed custom designs sit on the ground under every item; each design tile is one
+      // terrain tile (2×2 items) and is aligned to the field layer, so layer tile / 2.
+      if (show.designs && meta) {
+        const [dw, dh] = meta.design_dims;
+        const d2 = 2 * s;
+        const gx0 = Math.max(0, Math.floor(-ox / d2)), gy0 = Math.max(0, Math.floor(-oy / d2));
+        const gx1 = Math.min(dw, Math.ceil((cw - ox) / d2)), gy1 = Math.min(dh, Math.ceil((ch - oy) / d2));
+        for (let x = gx0; x < gx1; x++) for (let y = gy0; y < gy1; y++) {
+          const v = meta.design_tiles[x * dh + y];
+          if (v === 0xf800) continue;
+          const dx = ox + x * d2, dy = oy + y * d2;
+          // Normal slots are proven (0..pattern_count-1); the game never puts a PRO design on the
+          // ground, so anything else is an unknown value and keeps a plain marker. See docs/map-editor.md.
+          const known = v < save!.pattern_count;
+          const img = known ? designImage(v) : null;
+          if (img) { ctx.drawImage(img, dx, dy, d2, d2); continue; }
+          ctx.fillStyle = known ? "rgba(255,61,161,0.12)" : "rgba(255,61,161,0.28)";
+          ctx.fillRect(dx, dy, d2, d2);
+          ctx.strokeStyle = "rgba(255,61,161,0.75)"; ctx.lineWidth = 1;
+          ctx.strokeRect(dx + 0.5, dy + 0.5, d2 - 1, d2 - 1);
+        }
       }
       if (show.other) { ctx.globalAlpha = 0.3; ctx.drawImage(layerImage(1 - layer), ox, oy, L.width * s, L.height * s); }
       ctx.globalAlpha = 0.92;
@@ -233,23 +330,55 @@ export default function MapEditor() {
         ctx.strokeStyle = "#ff4d6d"; ctx.lineWidth = 2;
         for (const [x, y] of floating) ctx.strokeRect(ox + x * s, oy + y * s, s, s);
       }
-      // buildings
+      // buildings: x/y is the centre of a plot measured in terrain tiles (16 per acre),
+      // so the footprint spans x ± width and y ± height in item tiles (32 per acre).
       if (show.buildings && buildings) {
         ctx.font = `600 ${Math.max(10, Math.min(13, s * 2))}px Inter, system-ui`;
         ctx.textAlign = "center";
+        const hoverIdx = hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) : -1;
         buildings.forEach((b, i) => {
           if (!b.kind) return;
-          const cx = px + b.x * s, cy = py + b.y * s, r = Math.max(5, 3 * s);
-          ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          ctx.fillStyle = i === selBuilding ? "rgba(255,170,0,0.85)" : "rgba(30,30,40,0.55)";
-          ctx.fill();
-          ctx.strokeStyle = i === selBuilding ? "#fff" : "rgba(255,255,255,0.8)"; ctx.lineWidth = 1.5; ctx.stroke();
+          const sel = i === selBuilding;
+          const [r, g, bl] = buildingColor(b.kind);
+          const edge = sel ? "#fff" : `rgba(${r},${g},${bl},0.9)`;
+          const rects = buildingRects(gd, b.kind);
+          for (const [dx, dy, dw, dh] of rects) {
+            const x = px + (b.x + dx) * s, y = py + (b.y + dy) * s;
+            const w = dw * s, h = dh * s;
+            ctx.fillStyle = `rgba(${r},${g},${bl},${sel ? 0.5 : 0.26})`;
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = edge; ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+            // corner ticks make the edges readable at a glance
+            if (Math.min(w, h) >= 16) {
+              const c = Math.min(10, w / 4, h / 4);
+              ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.9)"; ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+              ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+              ctx.moveTo(x + w, y + h - c); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w - c, y + h);
+              ctx.moveTo(x + c, y + h); ctx.lineTo(x, y + h); ctx.lineTo(x, y + h - c);
+              ctx.stroke();
+            }
+          }
+          // entrances: a translucent plate marks the door zone, the glyph is the drag handle
+          const doors = buildingDoors(gd, b.kind);
+          doors.forEach(([dx, dy, dw, dh], di) => {
+            drawDoorZone(ctx, px + (b.x + dx) * s, py + (b.y + dy) * s, dw * s, dh * s, s, sel || hoverIdx === i, di === 0);
+          });
+          if (!doors.length) {
+            // no measured door: a neutral centre handle for movable kinds (fixed ones select by body)
+            if (buildingMovable(gd, b.kind)) drawMoveBadge(ctx, px + b.x * s, py + b.y * s, Math.max(3, Math.min(6, s * 0.7)));
+          }
           if (s >= 2) {
+            const [bdx, , bdw] = rects[0];
+            const bottom = Math.max(...rects.map((d) => d[1] + d[3]), ...doors.map((d) => d[1] + d[3]));
             const label = buildingName(b.kind);
             ctx.fillStyle = "rgba(0,0,0,0.55)";
             const tw = ctx.measureText(label).width + 8;
-            ctx.fillRect(cx - tw / 2, cy + r + 2, tw, 16);
-            ctx.fillStyle = "#fff"; ctx.fillText(label, cx, cy + r + 14);
+            const lx = px + (b.x + bdx + bdw / 2) * s, ly = py + (b.y + bottom) * s;
+            ctx.fillRect(lx - tw / 2, ly + 2, tw, 16);
+            ctx.fillStyle = "#fff"; ctx.fillText(label, lx, ly + 14);
           }
         });
         ctx.textAlign = "start";
@@ -295,8 +424,19 @@ export default function MapEditor() {
 
   // ------------------------------------------------------------- interaction
   const drag = useRef<{ mode: "pan" | "paint" | "erase" | "rect"; sx: number; sy: number; vx: number; vy: number; tx: number; ty: number; dirty: boolean; last: string } | null>(null);
+  const bdrag = useRef<{ index: number; startX: number; startY: number; mx: number; my: number; next: Building[] | null } | null>(null);
   const pasteMode = useRef(false);
   const space = useRef(false);
+
+  /** Index of the building whose door or move handle is at this absolute item position, or -1. */
+  const doorAt = (mx: number, my: number) =>
+    buildings?.findIndex((b) => {
+      if (!b.kind) return false;
+      const rects = buildingDoors(gd, b.kind);
+      if (!rects.length) return mx >= b.x - 1 && mx <= b.x && my >= b.y - 1 && my <= b.y;
+      return rects.some(([dx, dy, dw, dh]) =>
+        mx >= b.x + dx && mx < b.x + dx + dw && my >= b.y + dy && my < b.y + dy + dh);
+    }) ?? -1;
 
   const paintAt = (x: number, y: number, single: boolean) => {
     const g = grid();
@@ -322,14 +462,28 @@ export default function MapEditor() {
     if (e.button !== 0) return;
     if (pick) {
       const mx = tx + L.offset_x, my = ty + L.offset_y;
-      if (pick.kind === "plaza" && meta) { const plaza = { x: Math.max(0, mx), z: Math.max(0, my) }; setMeta({ ...meta, plaza }); api.setPlaza(plaza).then(touch); }
       if (pick.kind === "building" && buildings) { const next = buildings.slice(); next[pick.index] = { ...next[pick.index], x: Math.max(0, mx), y: Math.max(0, my) }; setBuildings(next); api.setBuildings(next).then(touch); }
       setPick(null);
       return;
     }
+    if (tool === "inspect" && show.buildings && buildings) {
+      const mx = tx + L.offset_x, my = ty + L.offset_y;
+      const hit = doorAt(mx, my);
+      if (hit >= 0) {
+        setSelBuilding(hit); setPanel("buildings");
+        // a fixed structure still selects from its door, but only movable kinds drag
+        if (buildingMovable(gd, buildings[hit].kind)) bdrag.current = { index: hit, startX: buildings[hit].x, startY: buildings[hit].y, mx, my, next: null };
+        return;
+      }
+    }
     if (tool === "inspect") {
       if (show.buildings && buildings) {
-        const hit = buildings.findIndex((b) => b.kind && Math.hypot(view.x + b.x * view.s - cx, view.y + b.y * view.s - cy) <= Math.max(5, 3 * view.s));
+        const mx = tx + L.offset_x, my = ty + L.offset_y;
+        const hit = buildings.findIndex((b) => {
+          if (!b.kind) return false;
+          return buildingRects(gd, b.kind).some(([dx, dy, dw, dh]) =>
+            mx >= b.x + dx && mx < b.x + dx + dw && my >= b.y + dy && my < b.y + dy + dh);
+        });
         if (hit >= 0) { setSelBuilding(hit); setPanel("buildings"); return; }
       }
       if (inLayer(tx, ty)) { setSelTile(grid().rootOf(tx, ty) ?? [tx, ty]); setPanel("tile"); }
@@ -353,6 +507,19 @@ export default function MapEditor() {
     const cx = e.clientX - r.left, cy = e.clientY - r.top;
     const [tx, ty] = toTile(cx, cy);
     if (!hover || hover[0] !== tx || hover[1] !== ty) setHover([tx, ty]);
+    const bd = bdrag.current;
+    if (bd && buildings) {
+      // one terrain tile per step keeps every plot aligned to the terrain grid
+      const [fw, fh] = buildingFootprint(gd, buildings[bd.index].kind);
+      const nx = Math.max(L.offset_x + fw, Math.min(L.offset_x + L.width - fw, bd.startX + Math.round((tx + L.offset_x - bd.mx) / 2) * 2));
+      const ny = Math.max(L.offset_y + fh, Math.min(L.offset_y + L.height - fh, bd.startY + Math.round((ty + L.offset_y - bd.my) / 2) * 2));
+      if (buildings[bd.index].x !== nx || buildings[bd.index].y !== ny) {
+        const next = buildings.slice();
+        next[bd.index] = { ...next[bd.index], x: nx, y: ny };
+        setBuildings(next); bd.next = next;
+      }
+      return;
+    }
     const d = drag.current;
     if (!d) return;
     if (d.mode === "pan") { setView({ ...view, x: d.vx + cx - d.sx, y: d.vy + cy - d.sy }); return; }
@@ -373,12 +540,27 @@ export default function MapEditor() {
   };
 
   const onUp = () => {
+    const bd = bdrag.current;
+    bdrag.current = null;
+    if (bd?.next) api.setBuildings(bd.next).then(touch).catch((e) => toast("error", "Could not save buildings", String(e)));
     const d = drag.current;
     drag.current = null;
     if (!d) return;
     if (d.mode === "paint" || d.mode === "erase") {
       if (d.dirty) sync(layer); else undo.current.pop();
     }
+  };
+
+  /** A cancelled pointer restores the drag preview and writes nothing. */
+  const onCancel = () => {
+    const bd = bdrag.current;
+    bdrag.current = null;
+    if (bd?.next) {
+      const next = bd.next.slice();
+      next[bd.index] = { ...next[bd.index], x: bd.startX, y: bd.startY };
+      setBuildings(next);
+    }
+    onUp();
   };
 
   // wheel: pinch / ⌘-scroll zooms, plain scroll pans (trackpad friendly)
@@ -459,8 +641,13 @@ export default function MapEditor() {
 
   if (!loaded || !meta || !buildings) return <Loading />;
   const hovered = hover && inLayer(hover[0], hover[1]) ? grid().get(hover[0], hover[1]) : null;
+  const hoverDesign = hover && inLayer(hover[0], hover[1]) && meta
+    ? meta.design_tiles[(hover[0] >> 1) * meta.design_dims[1] + (hover[1] >> 1)]
+    : 0xf800;
   const acreLabel = (x: number, y: number) => { const mx = x + L.offset_x, my = y + L.offset_y; return String.fromCharCode(65 + Math.floor(mx / 32)) + (Math.floor(my / 32) + 1); };
-  const cursor = pick ? "crosshair" : tool === "pan" ? "grab" : tool === "inspect" ? "default" : "crosshair";
+  const hoverBuilding = tool === "inspect" && show.buildings && hover ? doorAt(hover[0] + L.offset_x, hover[1] + L.offset_y) : -1;
+  const hoverDoor = hoverBuilding >= 0 && buildings ? buildingMovable(gd, buildings[hoverBuilding].kind) : false;
+  const cursor = pick ? "crosshair" : bdrag.current ? "grabbing" : tool === "pan" ? "grab" : tool === "inspect" ? (hoverDoor ? "grab" : "default") : "crosshair";
 
   return (
     <div className="content flush" style={{ flexDirection: "row" }}>
@@ -484,7 +671,7 @@ export default function MapEditor() {
           {tool === "rect" && clip.current && <Button size="sm" icon={<ClipboardPaste />} onClick={() => { pasteMode.current = true; toast("info", "Click on the map to paste"); }}>Paste</Button>}
           <div style={{ flex: 1 }} />
           <MenuButton label="View" icon={<Eye />} size="sm" align="right" items={([
-            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"],
+            ["other", "Other layer (dimmed)"], ["grid", "Grid & acre names"], ["buildings", "Buildings"], ["plaza", "Plaza"], ["sprites", "Item pictures when zoomed in"], ["designs", "Ground designs"],
           ] as [keyof typeof show, string][]).map(([k, label]) => ({ label, icon: show[k] ? <CheckIcon /> : <span style={{ width: 14 }} />, onClick: () => setShow({ ...show, [k]: !show[k] }) }))} />
           <div className="row" style={{ gap: 4 }}>
             <Button size="sm" iconOnly icon={<ZoomOut />} onClick={() => zoomBy(0.8)} title="Zoom out (−)" />
@@ -494,10 +681,10 @@ export default function MapEditor() {
         </div>
         <div ref={wrap} style={{ flex: 1, position: "relative", overflow: "hidden" }}>
           <canvas ref={canvas} style={{ position: "absolute", inset: 0, cursor, touchAction: "none" }}
-            onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
-          {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the {pick.kind === "plaza" ? "plaza" : "building"} · Esc to cancel</Badge></div>}
+            onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel} onPointerLeave={() => setHover(null)} onContextMenu={(e) => e.preventDefault()} />
+          {pick && <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)" }}><Badge kind="accent">Click on the map to place the building · Esc to cancel</Badge></div>}
           <div className="small" style={{ position: "absolute", left: 12, bottom: 10, padding: "4px 10px", borderRadius: 8, background: "color-mix(in srgb, var(--card) 88%, transparent)", border: "1px solid var(--border)", pointerEvents: "none" }}>
-            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
+            {hover && inLayer(hover[0], hover[1]) ? <>Acre <b>{acreLabel(hover[0], hover[1])}</b> · X {hover[0]} Y {hover[1]} · {itemLabel(gd, hovered!)}{hovered && hovered.id !== NONE_ID && hovered.id !== EXT_ID && <span className="faint"> · 0x{hex(hovered.id)}</span>}{hoverDesign !== 0xf800 && <span className="faint"> · {hoverDesign < save!.pattern_count ? `Ground design #${hoverDesign}` : `Unknown ground value 0x${hoverDesign.toString(16).toUpperCase()}`}</span>}</> : <span className="faint">{`Scroll to pan · pinch or ${MOD}-scroll to zoom · Space-drag to pan`}</span>}
           </div>
         </div>
       </div>
@@ -655,8 +842,14 @@ export default function MapEditor() {
     const b = selBuilding !== null ? buildings![selBuilding] : null;
     const upd = (patch: Partial<Building>) => {
       if (selBuilding === null) return;
-      const next = buildings!.slice(); next[selBuilding] = { ...next[selBuilding], ...patch };
-      setBuildings(next); api.setBuildings(next).then(touch).catch((e) => toast("error", "Could not save buildings", String(e)));
+      const cur = buildings![selBuilding], next = { ...cur, ...patch };
+      // mirrors Building::angle_ok: only a bridge (26) or incline (27) may change its angle
+      if (next.angle !== cur.angle && next.kind === cur.kind && cur.kind !== 26 && cur.kind !== 27) {
+        toast("error", "Buildings can't be rotated", "The game ignores an angle change on a placed structure. Only bridges and inclines carry a real angle.");
+        return;
+      }
+      const list = buildings!.slice(); list[selBuilding] = next;
+      setBuildings(list); api.setBuildings(list).then(touch).catch((e) => toast("error", "Could not save buildings", String(e)));
     };
     return (
       <div className="col" style={{ gap: 14 }}>
@@ -678,7 +871,11 @@ export default function MapEditor() {
                 <Field label="Unique id"><NumberInput value={b.unique_id} max={0xffff} onChange={(unique_id) => upd({ unique_id })} /></Field>
               </div>
             )}
-            <Callout kind="warn">Moving buildings does not move their footprint in the terrain. Keep the area flat and clear, or the game may misbehave.</Callout>
+            {buildingMovable(gd, b.kind) ? (
+              <Callout kind="warn">NHSE only changes the coordinates. Terrain, rivers, cliffs, trees, furniture and other buildings stay where they are, so check the new plot and its surroundings before saving.</Callout>
+            ) : (
+              <Callout kind="danger">The game doesn't let you move this structure. Bridges, inclines, the airport, tent, Resident Services, Redd's trawler, the studio and the hotel should stay fixed; moving them can break paths, layouts or the island.</Callout>
+            )}
           </div>
         )}
         <div className="row"><div className="label" style={{ flex: 1 }}>All buildings</div><Check label="Show empty slots" checked={showEmpty} onChange={setShowEmpty} /></div>
@@ -705,11 +902,9 @@ export default function MapEditor() {
       <div className="col" style={{ gap: 16 }}>
         <section className="col">
           <div className="label">Resident Services plaza</div>
-          <div className="grid cols-2" style={{ gap: 10 }}>
-            <Field label="X"><NumberInput value={m.plaza.x} onChange={(x) => { const plaza = { ...m.plaza, x }; setMeta({ ...m, plaza }); api.setPlaza(plaza).then(touch); }} /></Field>
-            <Field label="Z"><NumberInput value={m.plaza.z} onChange={(z) => { const plaza = { ...m.plaza, z }; setMeta({ ...m, plaza }); api.setPlaza(plaza).then(touch); }} /></Field>
+          <div className="small faint">
+            X {m.plaza.x}, Y {m.plaza.z - L.offset_y} · 12×10 terrain tiles. The game doesn't let you move the plaza; it is shown for reference only.
           </div>
-          <Button size="sm" icon={<Crosshair />} onClick={() => setPick({ kind: "plaza" })}>Pick position on the map</Button>
         </section>
         <section className="col">
           <div className="label">Acre templates</div>
