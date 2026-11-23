@@ -153,12 +153,14 @@ jobs:
 
             Copy `nhse.nro` to `/switch/` on the SD card and open it from the homebrew menu.
 
-            - Edits the game's own save on the console: close Animal Crossing, pick the user who plays, edit, press **+** to save. The save is backed up to the SD card when it is opened, and the changes are written in a single commit, so if anything fails the game's save stays as it was.
+            - Edits the game's own save on the console: close Animal Crossing, choose **Animal Crossing on this console**, edit, and press **+** to save. The save is backed up to the SD card when it is opened, and the changes are written in a single commit, so if anything fails the game's save stays as it was.
             - Also opens saves from the SD card (a folder, `main.dat` or a `.zip`) and restores backups.
             - Residents: Bells, Nook Miles, hotel tickets, Poki, pockets and storage, recipes, catalog, reactions. Island: turnips, villagers moving out, museum, weeds, branches, shells, holes, watering, recycle bin.
             - Light, dark, or the console's theme.
 
-            Backups are in `/switch/nhse/backups/` and open in the desktop app too. The map editor, villager replacement, designs and house editing are desktop only for now.
+            The Switch 2 app now includes a map and field item editor, villager replacement, custom design editing and import/export, and house exterior and room furniture editing.
+
+            NHSE now opens the island's console-wide save and verifies matching backup contents before skipping a new copy. Restoring stops if NHSE cannot back up the current save. Backups are in `/switch/nhse/backups/` and open in the desktop app too.
 
             Game versions 1.0.0 to 3.0.3 are supported.
 
