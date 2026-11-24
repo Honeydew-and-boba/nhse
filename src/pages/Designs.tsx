@@ -105,6 +105,8 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   const drag = useRef<{ a: Point; b: Point } | null>(null);
   // Whole-array snapshots; `d.pixels` is never mutated in place.
   const hist = useRef<{ past: number[][]; future: number[][] }>({ past: [], future: [] });
+  // Undo or redo pressed while a pointer is down, held until the gesture ends.
+  const pending = useRef<"undo" | "redo" | null>(null);
   // Move tool: the sheet as it was when the drag started, plus the last applied
   // offset, so every move recomputes from that snapshot instead of compounding.
   const pan = useRef<{ start: Point; base: number[]; dx: number; dy: number } | null>(null);
@@ -165,17 +167,29 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     stroke.current = true;
     pushHist(d.pixels);
   };
+  // A gesture is anything between pointer-down and pointer-up, so undoing halfway
+  // through one cannot split its single history entry.
+  const inGesture = () => painting.current || pan.current !== null || drag.current !== null;
   const undo = () => {
+    if (inGesture()) { pending.current = "undo"; return; }
     const prev = hist.current.past.pop();
     if (!prev) return;
     hist.current.future.unshift(d.pixels);
     commit({ ...d, pixels: prev });
   };
   const redo = () => {
+    if (inGesture()) { pending.current = "redo"; return; }
     const next = hist.current.future.shift();
     if (!next) return;
     hist.current.past.push(d.pixels);
     commit({ ...d, pixels: next });
+  };
+  // Undo/redo pressed mid-gesture runs once the pointer is released.
+  const endGesture = () => {
+    const t = pending.current;
+    pending.current = null;
+    if (t === "undo") undo();
+    else if (t === "redo") redo();
   };
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -246,8 +260,12 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   // Whole-sheet edits touch only the visible sheet, as in game, and each gesture
   // is one undo step. `snapshot` is the pixel array from before the gesture.
   const writeSheet = (next: number[], snapshot: number[]) => {
+    const base = sheet * 1024;
+    // Nothing moved (blank or symmetric sheet): no edit, no undo step, and the
+    // redo stack survives.
+    if (next.every((p, i) => p === d.pixels[base + i])) return;
     const px = d.pixels.slice();
-    px.splice(sheet * 1024, 1024, ...next);
+    px.splice(base, 1024, ...next);
     if (!stroke.current) { stroke.current = true; pushHist(snapshot); }
     commit({ ...d, pixels: px });
   };
@@ -308,12 +326,14 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     if (drag.current) finishShape();
     pan.current = null;
     painting.current = false;
+    endGesture();
   };
   const cancel = () => {
     drag.current = null;
     pan.current = null;
     setPreview(null);
     painting.current = false;
+    endGesture();
   };
   const save = async () => {
     await api.setDesignPixels(kind, index, d.info.name, d.palette, d.pixels);

@@ -82,7 +82,10 @@ alone for the island flag slot.
     compounds rounding; the whole drag is one undo step. Grid and Mirror do not apply.
 - Undo/redo: `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z` or `Ctrl+Y`. History is pixel-only, one step per
   stroke, 64 steps, and resets whenever a design is reloaded or imported. Shortcuts are ignored
-  while a text input has focus.
+  while a text input has focus. Undo or redo pressed while the pointer is still down runs when the
+  pointer is released, so a stroke stays one history entry. A whole-sheet edit that changes no
+  pixel (rotating a blank or symmetric sheet, dragging a uniform sheet) adds no history entry and
+  keeps the redo stack.
 - Save design is enabled only while the design differs from what was loaded or last saved (name,
   palette or pixels). Undoing every stroke, rotating four times or dragging the canvas back leaves
   it disabled, so an unchanged design is never rewritten.
