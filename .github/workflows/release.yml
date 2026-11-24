@@ -164,6 +164,11 @@ jobs:
           body: |
             Save editor for **Animal Crossing: New Horizons**, rewritten in Rust: a desktop app for Apple Silicon Macs and Windows (x64), and a homebrew app for the **Nintendo Switch 2**. All builds read and write saves with the same library.
 
+            ## New in 4.2.0
+
+            - **Desktop design editor** adds shape tools, brushes, mirror drawing, rotation, undo and redo, and an in-game-style color picker. It can also import normal `.acnh` design files.
+            - **Desktop map editor** shows building footprints, entrances, and placed ground designs. Drag movable buildings by their entrances to reposition them.
+
             ## Downloads
 
             | File | For |
