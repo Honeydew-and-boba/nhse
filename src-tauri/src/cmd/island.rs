@@ -485,6 +485,17 @@ pub fn buildings(state: State<AppState>) -> CmdResult<Vec<Building>> {
 #[tauri::command]
 pub fn set_buildings(state: State<AppState>, buildings: Vec<Building>) -> CmdResult<()> {
     with_save_mut!(state, |s| {
+        let current = s.buildings();
+        if let Some(i) = current
+            .iter()
+            .zip(&buildings)
+            .position(|(a, b)| !a.angle_ok(b))
+        {
+            return err(format!(
+                "Slot #{i}: the game does not rotate placed structures. Only bridges and inclines \
+                 carry a real angle."
+            ));
+        }
         s.set_buildings(&buildings);
         Ok(())
     })
