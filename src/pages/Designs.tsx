@@ -170,11 +170,11 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
   // A gesture is anything between pointer-down and pointer-up, so undoing halfway
   // through one cannot split its single history entry.
   const inGesture = () => painting.current || pan.current !== null || drag.current !== null;
-  const undo = () => {
+  const undo = (pixels = d.pixels) => {
     if (inGesture()) { pending.current = "undo"; return; }
     const prev = hist.current.past.pop();
     if (!prev) return;
-    hist.current.future.unshift(d.pixels);
+    hist.current.future.unshift(pixels);
     commit({ ...d, pixels: prev });
   };
   const redo = () => {
@@ -185,10 +185,10 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     commit({ ...d, pixels: next });
   };
   // Undo/redo pressed mid-gesture runs once the pointer is released.
-  const endGesture = () => {
+  const endGesture = (pixels?: number[]) => {
     const t = pending.current;
     pending.current = null;
-    if (t === "undo") undo();
+    if (t === "undo") undo(pixels);
     else if (t === "redo") redo();
   };
   const pos = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
@@ -296,6 +296,7 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     if (!changed) return;
     remember();
     commit({ ...d, pixels: px });
+    return px;
   };
   const down = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
@@ -323,10 +324,11 @@ function DesignEditor({ kind, index, ext, onClose, onSaved }: { kind: DesignKind
     } else if (painting.current && (tool === "pencil" || tool === "erase")) apply(...pos(e));
   };
   const up = () => {
-    if (drag.current) finishShape();
+    // The shape's state update has not rendered yet when Undo runs in this handler.
+    const pixels = drag.current ? finishShape() : undefined;
     pan.current = null;
     painting.current = false;
-    endGesture();
+    endGesture(pixels);
   };
   const cancel = () => {
     drag.current = null;
