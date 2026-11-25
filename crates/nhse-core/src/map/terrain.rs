@@ -73,17 +73,25 @@ pub fn road_family(m: u16) -> Option<&'static str> {
 
 pub type Rgb = [u8; 3];
 
+// One clear step per elevation level: the map editor must be readable at a glance.
 const GRASS: [Rgb; 4] = [
-    [76, 154, 74],
-    [92, 170, 84],
-    [108, 184, 96],
-    [124, 197, 110],
+    [70, 150, 72],
+    [104, 176, 88],
+    [146, 202, 104],
+    [190, 224, 130],
 ];
 const WATER: Rgb = [104, 196, 214];
 const WATER_DEEP: Rgb = [84, 176, 200];
 const SHORE: Rgb = [214, 199, 140];
-const CLIFF: [Rgb; 4] = [[66, 104, 62], [80, 118, 70], [94, 132, 80], [108, 146, 92]];
-const CLIFF_EDGE: Rgb = [52, 72, 48];
+// The game's cliffs are dirt/peach, not green. Keeping them distinct from grass also makes
+// height differences obvious in the map preview.
+const CLIFF: [Rgb; 4] = [
+    [172, 128, 96],
+    [186, 142, 108],
+    [200, 156, 120],
+    [214, 170, 134],
+];
+const CLIFF_EDGE: Rgb = [120, 86, 64];
 const FALL: Rgb = [134, 214, 236];
 const FOAM: Rgb = [235, 250, 255];
 
@@ -259,10 +267,89 @@ fn shade(c: Rgb, f: f32) -> Rgb {
     ]
 }
 
-/// Color of pixel (x, y) (0..16) inside a terrain tile.
-pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
+/// Wall pixels of a cliff tile from its measured model and angle. `None` means the shape is not
+/// measured, so the caller keeps the neutral all-four-edges look.
+fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
+    const N: u8 = 1;
+    const E: u8 = 2;
+    const S: u8 = 4;
+    const W: u8 = 8;
+    const T: i32 = 3; // wall band thickness
+    const R: f32 = 8.0; // rounded outside corner radius
+    let a = angle & 3;
+    let (low, rounded) = match m {
+        0x16 => (0xF, false),                                      // Cliff0A, pillar
+        0x19 => (0xF & ![S, E, N, W][a as usize], false),          // Cliff1A, one connected side
+        0x1C => (if a == 0 { N | S } else { E | W }, false),       // Cliff2A, opposite sides
+        0x1F => ([N | W, S | W, S | E, N | E][a as usize], true),  // Cliff3B, rounded corner
+        0x20 => ([N | W, S | W, S | E, N | E][a as usize], false), // Cliff3C, sharp corner
+        0x25 => ([W, S, E, N][a as usize], false),                 // Cliff5B, one low side
+        0x28 => {
+            // Cliff7A: no low side, one sunken diagonal corner
+            let nub = match a {
+                0 => nub_bl(x, y),
+                1 => nub_br(x, y),
+                2 => nub_tr(x, y),
+                _ => nub_tl(x, y),
+            };
+            return Some(nub);
+        }
+        _ => return None,
+    };
+    let mut wall = (low & N != 0 && y < T)
+        || (low & S != 0 && y >= 16 - T)
+        || (low & W != 0 && x < T)
+        || (low & E != 0 && x >= 16 - T);
+    if rounded {
+        for (bits, px, py) in [
+            ((N | W), x, y),           // outside corner NW
+            ((N | E), 15 - x, y),      // NE
+            ((S | E), 15 - x, 15 - y), // SE
+            ((S | W), x, 15 - y),      // SW
+        ] {
+            if low & bits != bits || px >= R as i32 || py >= R as i32 {
+                continue;
+            }
+            // A rounded corner pulls the wall back from the tile corner as a quarter arc.
+            let d = ((px * px + py * py) as f32).sqrt();
+            wall = d > R - T as f32 && d <= R;
+        }
+    }
+    Some(wall)
+}
+
+/// Sign of the quarter of a rounded ground-path bend that shows grass, or `None` when the tile is
+/// not a rounded bend. The game stores the same silhouette as `3B` (rounded outside corner) and
+/// `3C` (sharp, so the whole tile is path); the model name is the only difference.
+pub fn road_rounded_corner(model: u16, angle: u16) -> Option<(i32, i32)> {
+    let name = model_name(model);
+    if !(name.ends_with("3B") || name.ends_with("2B")) {
+        return None;
+    }
+    // A bend fills the diagonal between its two connected sides: SE at angle 0, rotating
+    // counter-clockwise. The grass is the opposite corner.
+    Some(match [2u8, 1, 8, 4][(angle & 3) as usize] {
+        2 => (-1, -1), // SE filled: grass NW
+        1 => (-1, 1),  // NE filled: grass SW
+        8 => (1, 1),   // NW filled: grass SE
+        _ => (1, -1),  // SW filled: grass NE
+    })
+}
+
+/// Color of pixel (x, y) (0..16) inside a terrain tile. `road_corner` is the tile's rounded bend
+/// corner from `road_rounded_corner`, precomputed once per tile by the renderer.
+pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32, road_corner: Option<(i32, i32)>) -> Rgb {
     if is_road(t.road) {
         let c = road_color(t.road);
+        if let Some((sx, sy)) = road_corner {
+            // The outside of a rounded bend is a quarter disc of grass in the tile corner.
+            const R: i32 = 8; // shortcut: radius guessed from the game's look, tweak if it reads wrong
+            let px = if sx < 0 { x } else { 15 - x };
+            let py = if sy < 0 { y } else { 15 - y };
+            if px < R && py < R && (R - px).pow(2) + (R - py).pow(2) > R * R {
+                return grass(t.elevation);
+            }
+        }
         // subtle texture so road patches read as paths
         return if (x + y) % 8 == 0 { shade(c, 0.93) } else { c };
     }
@@ -297,10 +384,11 @@ pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
     }
     if is_cliff(m) {
         let base = CLIFF[(t.elevation as usize).min(3)];
-        return if x == 0 || y == 0 || x == 15 || y == 15 {
-            CLIFF_EDGE
-        } else {
-            base
+        return match cliff_wall(m, t.angle, x, y) {
+            Some(true) => CLIFF_EDGE,
+            Some(false) => base,
+            None if x == 0 || y == 0 || x == 15 || y == 15 => CLIFF_EDGE,
+            None => base,
         };
     }
     grass(t.elevation)
@@ -309,4 +397,51 @@ pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32) -> Rgb {
 /// Short label for a terrain model (e.g. `River2B`).
 pub fn model_name(m: u16) -> &'static str {
     crate::data::tables::enum_name("TerrainUnitModel", m as i64).unwrap_or("?")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rounded_road_bend_shows_its_grass_corner() {
+        let model =
+            |n: &str| crate::data::tables::enum_value("TerrainUnitModel", n).unwrap() as u16;
+        let tile = |m: u16, angle: u16| TerrainTile {
+            road: m,
+            road_angle: angle,
+            ..Default::default()
+        };
+        let corner = road_rounded_corner(model("RoadFanPattern3B"), 0);
+        assert_eq!(corner, Some((-1, -1))); // SE filled, so the NW corner is grass
+        let rounded = tile(model("RoadFanPattern3B"), 0);
+        assert_eq!(tile_pixel(&rounded, 0, 0, corner), grass(0));
+        assert_eq!(tile_pixel(&rounded, 8, 9, corner), road_color(rounded.road));
+        // sharp bends and non-bends fill the whole tile
+        let sharp = tile(model("RoadFanPattern3C"), 0);
+        assert_eq!(road_rounded_corner(sharp.road, 0), None);
+        assert_eq!(tile_pixel(&sharp, 8, 9, None), road_color(sharp.road));
+        assert_eq!(road_rounded_corner(model("RoadFanPattern2A"), 0), None);
+        // a three-tile L: 2B is rounded, 2C sharp
+        let l_round = tile(model("RoadFanPattern2B"), 0);
+        let l_corner = road_rounded_corner(l_round.road, 0);
+        assert_eq!(l_corner, Some((-1, -1)));
+        assert_eq!(tile_pixel(&l_round, 0, 0, l_corner), grass(0));
+        assert_eq!(road_rounded_corner(model("RoadFanPattern2C"), 0), None);
+    }
+
+    #[test]
+    fn cliff_wall_shows_rounded_and_sharp_corners() {
+        // NW outside corner: rounded pulls the wall back, sharp keeps the right angle
+        assert_eq!(cliff_wall(0x1F, 0, 0, 0), Some(false)); // Cliff3B
+        assert_eq!(cliff_wall(0x20, 0, 0, 0), Some(true)); // Cliff3C
+                                                           // straight face: Cliff5B angle 1 has the low side south
+        assert_eq!(cliff_wall(0x25, 1, 8, 15), Some(true));
+        assert_eq!(cliff_wall(0x25, 1, 8, 2), Some(false));
+        // pillar: body in the middle, wall on every side
+        assert_eq!(cliff_wall(0x16, 0, 8, 8), Some(false));
+        assert_eq!(cliff_wall(0x16, 0, 8, 0), Some(true));
+        // an unmeasured model keeps the neutral fallback
+        assert_eq!(cliff_wall(0x1D, 0, 0, 0), None);
+    }
 }

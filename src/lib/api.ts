@@ -99,7 +99,8 @@ export interface Post { slot: number; date: GDate; body: string; footer: string;
 export interface Board { built: GDate; latest_unique_id: number; posts: Post[]; }
 export interface Building { kind: number; x: number; y: number; angle: number; bit: number; type_: number; type_arg: number; unique_id: number; unused: number; }
 export interface Plaza { x: number; z: number; }
-export interface MapMeta { acres: number[]; plaza: Plaza; design_tiles: number[]; design_dims: [number, number]; terrain_dims: [number, number]; }
+export interface MapMeta { acres: number[]; plaza: Plaza; design_tiles: number[]; design_dims: [number, number]; terrain_dims: [number, number]; max_elevation: number; elevations: number[]; editable: boolean[]; design_water: boolean[]; }
+export interface TerrainPaintResult { changed: number; falls: number; warnings: number; trees: number; buildings: number; }
 export interface Rect { x: number; y: number; w: number; h: number; }
 export type ClearKind = "weeds" | "trees" | "flowers" | "bushes" | "plants" | "fences" | "stones" | "holes" | "field_objects" | "placed_items" | "shells" | "branches" | "everything";
 export type Arrangement = "square" | "horizontal" | "vertical";
@@ -214,6 +215,9 @@ export const api = {
   setFieldLayer: (layer: number, bytes: Uint8Array) => invoke<void>("set_field_layer", bytes, { headers: { "x-layer": String(layer) } }),
   terrain: async () => new Uint8Array(await call<ArrayBuffer>("terrain")),
   setTerrain: (bytes: Uint8Array) => invoke<void>("set_terrain", bytes),
+  paintRoad: (tiles: [number, number][], family: string | null, sharp: boolean) => call<number>("paint_road", { tiles, family, sharp }),
+  paintWater: (tiles: [number, number][], paint: boolean, sharp: boolean) => call<TerrainPaintResult>("paint_water", { tiles, paint, sharp }),
+  paintHeight: (tiles: [number, number][], delta: number, sharp: boolean) => call<TerrainPaintResult>("paint_height", { tiles, delta, sharp }),
   terrainPng: async (px?: number) => new Uint8Array(await call<ArrayBuffer>("terrain_png", { px })),
   mapMeta: () => call<MapMeta>("map_meta"),
   setAcres: (acres: number[]) => call<void>("set_acres", { acres }),

@@ -1,5 +1,5 @@
 //! Rasterization of the island map and item color tables.
-use super::terrain::{tile_pixel, Rgb, TerrainTile, TILES_H, TILES_W};
+use super::terrain::{road_rounded_corner, tile_pixel, Rgb, TerrainTile, TILES_H, TILES_W};
 use crate::data::items::{item_count, item_kind, KIND_UNKNOWN};
 use crate::data::tables::{enum_value, tables};
 
@@ -33,18 +33,57 @@ fn collision_color(c: u8) -> Option<Rgb> {
     })
 }
 
-/// Color of a pixel (x, y in 0..16) of a pre-defined acre, or `None` if transparent (terrain-driven).
-pub fn acre_pixel(acre: u16, x: usize, y: usize) -> Option<Rgb> {
+/// Raw collision type of a predefined acre pixel, or `None` for a custom (terrain-driven) pixel
+/// and for acre ids with no template.
+pub fn acre_collision(acre: u16, x: usize, y: usize) -> Option<u8> {
     if acre == 0 || acre > ACRE_TEMPLATE_MAX {
         return None;
     }
     let ofs = acre as usize * 4096 + 4 * (y * 64 + x);
     let c = *OUTSIDE.get(ofs)?;
     // collision type 7 ("null") marks a customizable pixel drawn from the terrain layer
-    if c == 7 {
-        return None;
-    }
+    (c != 7).then_some(c)
+}
+
+/// True for the collision types the game draws as water: river and river mouth, sea and sea
+/// edge, tide pool. A ground design on one of them floats in game.
+pub fn collision_is_water(c: u8) -> bool {
+    matches!(c, 1 | 5 | 12 | 15 | 43 | 46)
+}
+
+/// Color of a pixel (x, y in 0..16) of a pre-defined acre, or `None` if transparent (terrain-driven).
+pub fn acre_pixel(acre: u16, x: usize, y: usize) -> Option<Rgb> {
+    let c = acre_collision(acre, x, y)?;
     Some(collision_color(c).unwrap_or([255, 0, 255]))
+}
+
+/// Acre template id for a terrain tile (the terrain layer starts one acre into the 9×8 map).
+pub fn terrain_acre(acres: &[u16], x: usize, y: usize) -> u16 {
+    acres
+        .get((1 + y / 16) * 9 + 1 + x / 16)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// True when the acre template lets the terrain layer own this tile, i.e. collision type 7.
+/// Beach sand, sea, rocks, tide pools and river mouths are template pixels: the game draws them
+/// and ignores terrain edits there.
+pub fn terrain_editable(acres: &[u16], x: usize, y: usize) -> bool {
+    acre_pixel(terrain_acre(acres, x, y), x % 16, y % 16).is_none()
+}
+
+/// True when a ground design at design-grid tile `(dx, dy)` would float in game: terrain water,
+/// open sea or a tide pool. Beach sand and solid template ground accept a design.
+pub fn design_tile_is_water(tiles: &[TerrainTile], acres: &[u16], dx: usize, dy: usize) -> bool {
+    let tx = dx as i64 - 16;
+    if tx >= 0 && (tx as usize) < TILES_W && dy < TILES_H {
+        let t = &tiles[tx as usize * TILES_H + dy];
+        if super::terrain::is_river(t.model) || super::terrain::is_fall(t.model) {
+            return true;
+        }
+    }
+    let acre = acres.get((1 + dy / 16) * 9 + dx / 16).copied().unwrap_or(0);
+    acre_collision(acre, dx % 16, dy % 16).is_some_and(collision_is_water)
 }
 
 /// Inputs needed to draw the terrain.
@@ -87,6 +126,11 @@ pub fn render_terrain(view: &TerrainView, px: usize) -> (usize, usize, Vec<u8>) 
                 && rel_y >= 0
                 && (rel_x as usize) < TILES_W
                 && (rel_y as usize) < TILES_H;
+            // one model lookup per tile: a rounded bend shows grass in one tile corner
+            let road_corner = inside
+                .then(|| view.tile(rel_x as usize, rel_y as usize))
+                .filter(|t| t.road != 0)
+                .and_then(|t| road_rounded_corner(t.road, t.road_angle));
             for sy in 0..px {
                 for sx in 0..px {
                     // sample the 16×16 tile pattern
@@ -100,6 +144,7 @@ pub fn render_terrain(view: &TerrainView, px: usize) -> (usize, usize, Vec<u8>) 
                             view.tile(rel_x as usize, rel_y as usize),
                             ix as i32,
                             iy as i32,
+                            road_corner,
                         ),
                         Some(c) => c,
                         None => [86, 176, 210],
@@ -266,4 +311,34 @@ pub fn item_color_table() -> (Vec<u32>, Vec<(u16, u32)>) {
         .map(|f| (f.id, field_item_color(f.id)))
         .collect();
     (regular, field)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_acre_template_marks_beach_and_sea_as_fixed() {
+        let mut acres = vec![0u16; 72];
+        assert!(terrain_editable(&acres, 0, 0), "acre 0 is fully custom");
+        // Acre 39 is the sample save's G7 beach row: land on top, sand and sea below.
+        let (row, col) = (1, 1);
+        acres[row * 9 + col] = 39; // terrain tiles x<16, y<16
+        let (row, col) = (6, 6);
+        acres[row * 9 + col] = 39; // design tiles x 96..111, y 80..95
+        assert!(terrain_editable(&acres, 0, 0), "land row stays editable");
+        assert!(
+            !terrain_editable(&acres, 0, 5),
+            "sand row is a template pixel"
+        );
+
+        let mut tiles = vec![TerrainTile::default(); TILES_W * TILES_H];
+        assert!(design_tile_is_water(&tiles, &acres, 96, 94), "open sea");
+        assert!(!design_tile_is_water(&tiles, &acres, 96, 85), "beach sand");
+        assert!(!design_tile_is_water(&tiles, &acres, 96, 80), "land row");
+
+        // A river under the design floats a design too, even on a custom acre.
+        tiles[0].model = enum_value("TerrainUnitModel", "River0A").unwrap() as u16;
+        assert!(design_tile_is_water(&tiles, &[0u16; 72], 16, 0));
+    }
 }

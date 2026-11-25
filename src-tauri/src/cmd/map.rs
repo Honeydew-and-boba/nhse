@@ -5,7 +5,10 @@ use crate::{with_save, with_save_mut};
 use nhse_core::editing::fieldtools::{self, Arrangement, ClearKind};
 use nhse_core::editing::formats;
 use nhse_core::map::field::Plaza;
-use nhse_core::map::render::{encode_png, render_terrain, TerrainView};
+use nhse_core::map::paint;
+use nhse_core::map::render::{
+    design_tile_is_water, encode_png, render_terrain, terrain_editable, TerrainView,
+};
 use nhse_core::map::terrain::{TerrainTile, TILES_H, TILES_W};
 use nhse_core::map::ItemGrid;
 use nhse_core::Item;
@@ -55,6 +58,160 @@ pub fn set_terrain(state: State<AppState>, request: Request) -> CmdResult<()> {
     with_save_mut!(state, |s| Ok(s.set_terrain_bytes(body)?))
 }
 
+/// Paints or clears the road layer (default paths) on terrain tiles. `family` is a
+/// `road_family` name (`soil`, `stone`, …); leave it out to clear. `sharp` styles the bends the
+/// stroke creates; a bend it does not touch keeps its rounded/sharp style.
+#[tauri::command]
+pub fn paint_road(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    family: Option<String>,
+    sharp: bool,
+) -> CmdResult<usize> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let before = t.clone();
+        let acres = s.acres();
+        let targets: Vec<(usize, usize)> = tiles
+            .iter()
+            .map(|p| (p[0], p[1]))
+            .filter(|&(x, y)| x < TILES_W && y < TILES_H && terrain_editable(&acres, x, y))
+            .collect();
+        paint::paint_road(&mut t, TILES_W, TILES_H, &targets, family.as_deref(), sharp);
+        // The ring pass can touch a beach or sea tile the game owns; put those back.
+        restore_fixed(&mut t, &before, &acres);
+        let changed = (0..TILES_W * TILES_H)
+            .filter(|&i| before[i] != t[i])
+            .count();
+        if changed > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(changed)
+    })
+}
+
+#[derive(Serialize)]
+pub struct TerrainPaintResult {
+    pub changed: usize,
+    pub falls: usize,
+    pub warnings: usize,
+    /// Trees within one terrain tile of a changed tile.
+    pub trees: usize,
+    /// Buildings (whole plots) within one terrain tile of a changed tile.
+    pub buildings: usize,
+}
+
+/// Trees and buildings within one terrain tile of the tiles this stroke changed.
+fn changed_objects(
+    s: &nhse_core::HorizonSave,
+    before: &[TerrainTile],
+    after: &[TerrainTile],
+) -> (usize, usize) {
+    let changed: Vec<(usize, usize)> = (0..TILES_W)
+        .flat_map(|x| (0..TILES_H).map(move |y| (x, y)))
+        .filter(|&(x, y)| before[x * TILES_H + y] != after[x * TILES_H + y])
+        .collect();
+    s.nearby_objects(&changed)
+}
+
+/// Restores acre-template tiles (collision type other than 7). The paint functions re-tile the
+/// 8-neighbour ring, which can include beach, sea or a river mouth; the game draws those from the
+/// template and ignores terrain edits, so never write them.
+fn restore_fixed(t: &mut [TerrainTile], before: &[TerrainTile], acres: &[u16]) {
+    for x in 0..TILES_W {
+        for y in 0..TILES_H {
+            let i = x * TILES_H + y;
+            if !terrain_editable(acres, x, y) {
+                t[i] = before[i];
+            }
+        }
+    }
+}
+
+/// Paints (`paint = true`) or erases rivers on terrain tiles. Water keeps the tile height;
+/// a water tile one level above water gets a waterfall. `sharp` styles newly created cliff corners.
+#[tauri::command]
+pub fn paint_water(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    paint: bool,
+    sharp: bool,
+) -> CmdResult<TerrainPaintResult> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let before = t.clone();
+        let acres = s.acres();
+        let targets: Vec<(usize, usize)> = tiles
+            .iter()
+            .map(|p| (p[0], p[1]))
+            .filter(|&(x, y)| x < TILES_W && y < TILES_H && terrain_editable(&acres, x, y))
+            .collect();
+        let (_, falls, warnings) =
+            paint::paint_water(&mut t, TILES_W, TILES_H, &targets, paint, sharp)?;
+        restore_fixed(&mut t, &before, &acres);
+        let changed = (0..TILES_W * TILES_H)
+            .filter(|&i| before[i] != t[i])
+            .count();
+        let (trees, buildings) = if changed > 0 {
+            changed_objects(s, &before, &t)
+        } else {
+            (0, 0)
+        };
+        if changed > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(TerrainPaintResult {
+            changed,
+            falls,
+            warnings,
+            trees,
+            buildings,
+        })
+    })
+}
+
+/// Raises (`delta = 1`) or lowers (`delta = -1`) land and re-derives its cliff faces.
+/// `sharp` styles newly created cliff corners; existing corners keep their look.
+#[tauri::command]
+pub fn paint_height(
+    state: State<AppState>,
+    tiles: Vec<[usize; 2]>,
+    delta: i32,
+    sharp: bool,
+) -> CmdResult<TerrainPaintResult> {
+    with_save_mut!(state, |s| {
+        let mut t = s.terrain();
+        let before = t.clone();
+        let acres = s.acres();
+        let targets: Vec<(usize, usize)> = tiles
+            .iter()
+            .map(|p| (p[0], p[1]))
+            .filter(|&(x, y)| x < TILES_W && y < TILES_H && terrain_editable(&acres, x, y))
+            .collect();
+        let (_, falls, warnings) =
+            paint::paint_height(&mut t, TILES_W, TILES_H, &targets, delta, sharp)?;
+        restore_fixed(&mut t, &before, &acres);
+        let changed = (0..TILES_W * TILES_H)
+            .filter(|&i| before[i] != t[i])
+            .count();
+        let (trees, buildings) = if changed > 0 {
+            changed_objects(s, &before, &t)
+        } else {
+            (0, 0)
+        };
+        if changed > 0 {
+            s.set_terrain(&t);
+        }
+        Ok(TerrainPaintResult {
+            changed,
+            falls,
+            warnings,
+            trees,
+            buildings,
+        })
+    })
+}
+
 /// Rendered terrain + acre templates (PNG), `px` pixels per terrain tile.
 #[tauri::command]
 pub fn terrain_png(state: State<AppState>, px: Option<usize>) -> CmdResult<Response> {
@@ -79,17 +236,49 @@ pub struct MapMeta {
     pub design_tiles: Vec<u16>,
     pub design_dims: (usize, usize),
     pub terrain_dims: (usize, usize),
+    /// Highest terrain elevation in the save; the game only supports 0–3.
+    pub max_elevation: u16,
+    /// One elevation per terrain tile, column-major (`x * terrain_dims.1 + y`).
+    pub elevations: Vec<u8>,
+    /// One flag per terrain tile: the acre template lets the terrain layer own it (collision
+    /// type 7). Beach, sea, rocks and river mouths are false and cannot be painted.
+    pub editable: Vec<bool>,
+    /// One flag per design tile: a ground design there floats in game (river, fall, sea, tide pool).
+    pub design_water: Vec<bool>,
 }
 
 #[tauri::command]
 pub fn map_meta(state: State<AppState>) -> CmdResult<MapMeta> {
-    with_save!(state, |s| Ok(MapMeta {
-        acres: s.acres(),
-        plaza: s.plaza(),
-        design_tiles: s.map_design_tiles(),
-        design_dims: s.map_design_dims(),
-        terrain_dims: (TILES_W, TILES_H),
-    }))
+    with_save!(state, |s| {
+        let tiles = s.terrain();
+        let acres = s.acres();
+        let max_elevation = tiles.iter().map(|t| t.elevation).max().unwrap_or(0);
+        let editable = (0..TILES_W)
+            .flat_map(|x| (0..TILES_H).map(move |y| (x, y)))
+            .map(|(x, y)| terrain_editable(&acres, x, y))
+            .collect();
+        let (dw, dh) = s.map_design_dims();
+        let mut design_water = Vec::with_capacity(dw * dh);
+        for dx in 0..dw {
+            for dy in 0..dh {
+                design_water.push(design_tile_is_water(&tiles, &acres, dx, dy));
+            }
+        }
+        Ok(MapMeta {
+            acres,
+            plaza: s.plaza(),
+            design_tiles: s.map_design_tiles(),
+            design_dims: (dw, dh),
+            terrain_dims: (TILES_W, TILES_H),
+            max_elevation,
+            elevations: tiles
+                .iter()
+                .map(|t| t.elevation.min(u8::MAX as u16) as u8)
+                .collect(),
+            editable,
+            design_water,
+        })
+    })
 }
 
 #[tauri::command]
