@@ -213,9 +213,10 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 
 > **Status.** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded cliff *and* river
 > corners, straight, recessed and consecutive falls, painted paths and ground designs, three-tile
-> L bends (`2B`/`2C`), and moving buildings. Not verified in game: the river junction models the
-> sample save never used (see Measured river table), and the template/design gates below, which
-> landed after the 2026-11-24 pass. **Back up the save before terrain work.**
+> river L bends (`2C`), and moving buildings. The river junction table below was measured from water
+> shapes painted in game on acre G6 (2026-11-25, two dumps), including `River6A`; every flat model
+> the editor emits came out of those dumps. Loading editor-written junctions in game is the next
+> check. **Back up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
@@ -233,9 +234,10 @@ the same way.
 
 - **Water** sets the tile to a river at its current height and re-tiles every water tile in the
   stroke plus its 8-neighbour ring. Banks come from the water mask. The **Corners** choice picks
-  `River3B` (rounded) or `River3C` (sharp) for new bends, and a bend that already exists keeps its
-  style. Painting over a cliff face is allowed only when that face drops one level into water; it
-  becomes a waterfall. Water clears the road layer and any ground design on the painted tiles.
+  `River3B` (rounded) or `River3C` (sharp) for a new 2×2 bend; a three-tile L is `River2C`, which is
+  what the game uses, and a bend that already exists keeps its style. Painting over a cliff face is
+  allowed only when that face drops one level into water; it becomes a waterfall. Water clears the
+  road layer and any ground design on the painted tiles.
 - **Raise / Lower** moves elevation by one level and re-derives the cliff faces on the stroke and
   its ring. Plateau tops stay `Base` at the new height; faces are `Cliff5B` (one low side),
   `Cliff3B` (two adjacent low sides) or `Cliff7A` (one low diagonal). Erase the water first: a
@@ -252,25 +254,50 @@ the same way.
 
 ### Measured river table
 
-Checked against a real 3.0.3 save (811 river tiles). `sides` are the four water neighbours;
-`corners` are the four diagonal ones.
+Checked against two rounds of water shapes painted by the player in acre G6 of a real 3.0.3 save and
+dumped back (model, angle and all eight neighbours). `sides` are the four water neighbours; `corners`
+are the four diagonals. Only a diagonal between two water sides is a shape corner: a water diagonal
+on the dry side is part of that bank and does not change the model.
 
 | Water neighbours | Model | Angle |
 |---|---|---|
 | no water sides | `River0A` | 0 |
 | 1 water side | `River1A` | open side: S 0, E 1, N 2, W 3 |
 | 2 opposite sides | `River2A` | 0 = N/S, 1 = E/W |
-| 2 adjacent sides | `River3B` | water corner: SE 0, NE 1, NW 2, SW 3 |
-| 3 sides | `River5B` | land side: W 0, S 1, E 2, N 3 |
-| 4 sides, no land diagonal | `River8A` | 0 |
-| 4 sides, all four land diagonals (a 1×1 pond) | `River4C` | 0 |
-| 4 sides, one land diagonal | `River7A` | land corner: SW 0, SE 1, NE 2, NW 3 |
+| 2 adjacent sides, corner between them dry (three-tile L) | `River2C` | water corner: SE 0, NE 1, NW 2, SW 3 |
+| 2 adjacent sides, corner between them water (2×2 block) | `River3B` (Rounded) / `River3C` (Sharp) | water corner: SE 0, NE 1, NW 2, SW 3 |
+| 3 sides, both corners between water sides dry | `River3A` | land side: W 0, S 1, E 2, N 3 |
+| 3 sides, one corner between water sides water | `River4A` (SE filled) / `River4B` (NE filled) | land side: W 0, S 1, E 2, N 3 |
+| 3 sides, both corners between water sides water | `River5B` | land side: W 0, S 1, E 2, N 3 |
+| 4 sides, no water diagonals | `River4C` | 0 |
+| 4 sides, one water diagonal | `River5A` | water corner: SW 0, SE 1, NE 2, NW 3 |
+| 4 sides, two opposite water diagonals | `River6A` | NE/SW 0, NW/SE 1 |
+| 4 sides, two adjacent water diagonals | `River6B` | dry side: S 0, E 1, N 2, W 3 |
+| 4 sides, three water diagonals | `River7A` | dry corner: SW 0, SE 1, NE 2, NW 3 |
+| 4 sides, four water diagonals | `River8A` | 0 |
 
-`River3C` (sharp bend) is written when **Corners** is set to Sharp; an existing bend keeps its
-style. Four water sides with two or three land diagonals still need junction models this save never
-showed; the generator fills them as `River8A` (open water) and the shape fixer can replace them.
-`River4C` was measured on the test acre's 3×3 pad, whose middle is water with falls on all four
-sides and cliff corners on all four diagonals; the top of a one-tile-wide cascade has the same shape.
+The save's three-tile L bends are all `River2C`; the 2×2 block corners are `River3C`, and a full
+3×3 water body has `River3B` corners. The 3×3 band in the second dump is a square with two opposite
+corners dry, so its corners are `River3C` and its centre is `River6A`. So B and C are the
+rounded/square bank of the same silhouette, not a different shape. The game wrote `River2C` for all
+four L orientations, so the painter always uses `2C` for an L; **Corners** writes `River3B` when
+Rounded and `River3C` when Sharp for a 2×2 corner. The 3-sided `River4A` and `River4B` differ only
+in which of the two water-side corners is filled; the land-side corners never matter, because the
+game stored `River3A` for a T with zero, one and two wet land-side corners. An existing bend keeps
+its rounded/sharp style when a later stroke re-tiles the ring; an existing `River2B` from an older
+build is also kept.
+
+The second dump measured `River6A` on a plus with opposite water corners (NE and SW water, NW and SE
+dry). `River4C` is the 1×1 water tile with all four sides water and all four diagonals dry, measured
+on the new G6 acre and previously on the 3×3 pad's middle tile. Four water sides with two or three
+dry diagonals are now `River6A`/`River6B`/`River5A` instead of open water.
+
+The 15 base models taken together cover all 47 distinct side/corner classes, and therefore all 256
+8-neighbour water masks: the other 209 masks differ only in diagonals on a land side, which are
+bank. `the_river_table_covers_every_flat_water_mask` in `paint.rs` enumerates the classes, and
+`measured_river_shapes_match_the_game_dump` pins the measured models. The only river model never
+produced by the game is `River2B`, the atlas's 45° channel bank; the editor does not emit it. There
+is no flat water shape left untested.
 
 ### Measured cliff table
 
@@ -415,20 +442,19 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
 - Painting water within one tile of an existing multi-level waterfall fails the >1-level check
   (nothing is written). Paint away from it, or fix the tiles by hand.
 - A tile that is already a river bend keeps its rounded/sharp style when a later stroke re-tiles the
-  ring, so a hand-picked `River3C` survives. Hand-set fall models (any model the autotiler never
-  writes, such as `Fall205`) and `Cliff3C` corners are kept the same way. Use **Fix one tile** to
-  change a bend or a corner by hand.
+  ring, so a hand-picked `River3C` survives; this covers both the L pair (`2B`/`2C`) and the 2×2
+  pair (`3B`/`3C`). Hand-set fall models (any model the autotiler never writes, such as `Fall205`)
+  and `Cliff3C` corners are kept the same way. Use **Fix one tile** to change a bend or a corner by
+  hand.
 - A saddle (two low diagonals, no low side) or a strip with no connected same-height side is still
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
-- A one-tile fall that drops into a multi-tile pool can sit over an unmeasured 4-water-side/2-land-
-  diagonal river junction. The generator fills that base as `River8A`, so open-water waves can show
-  under the fall even though the fall model is correct. Measuring the missing junction models is the
-  fix.
+- A one-tile fall that drops into a multi-tile pool can sit over a 4-water-side/2-land-diagonal
+  river junction. The generator fills it as `River6A`/`River6B`, both measured in game.
 - The generator writes the rounded `Cliff3B` style for every 2-adjacent-low corner unless the
   **Corners** choice is Sharp (`Cliff3C`).
 - **Corners** styles a path bend whose inside diagonal is empty with `2B` (rounded) or `2C` (sharp),
-  and one whose inside diagonal is also path with `3B`/`3C`. A neighbour-only stroke keeps the
-  existing style.
+  and one whose inside diagonal is also path with `3B`/`3C`. The river brush uses `River2C` for a
+  three-tile L and `3B`/`3C` for a 2×2 corner. A neighbour-only stroke keeps the existing style.
 - Default paths cannot be written on beach sand or the open sea, because the acre template owns
   those tiles; ground designs can go on sand but not on water, sea or a tide pool (see above).
 
@@ -458,22 +484,36 @@ The 2026-11-24 pass re-checked the ground and terrain brushes in game (3.0.3): a
 path families and their joins, designs over paths, the erase brushes, the outer-edge refusal,
 raise/lower including the 0–3 limit, rivers with banks, and recessed and consecutive falls. It found
 that terrain and water could be painted on beach and sea (invisible in game, with no collision),
-that designs floated on water, and that a three-tile L stayed square because the editor wrote `2C`.
-The game rewrote those Ls to `2B` when it loaded the save and they render rounded, which is why the
-painter now uses `2B`/`2C`. The template gate, the design gate and the top-bar brush deselection
-landed after the pass and have not been re-tested in game; the two water/dry intersections under
-Open questions remain.
+that designs floated on water, and that a three-tile *path* L stayed square because the editor wrote
+`2C`. The game rewrote those path Ls to `2B` when it loaded the save and they render rounded, which
+is why the path painter now uses `2B`/`2C`. The template gate, the design gate and the top-bar brush
+deselection landed after the pass and have not been re-tested in game; the waterfall intersection
+under Open questions remains.
+
+The 2026-11-25 pass painted 17 water shapes with the in-game water tool on a flat acre G6 and
+dumped the save back: four three-tile Ls (one per orientation), a T with no water-side corners, a T
+with one and with two, two T variants with wet land-side corners, a plus with no diagonals, a plus
+with one, two adjacent and three water diagonals, a full 2×2-armed junction, open water, and a
+3×3 body with rounded corners. A second dump added a plus with opposite water corners and rebuilt
+the 3×3 body as a 3×3 band. Every flat model in the river table above came out of those dumps; the
+L bends were `River2C` in all four orientations, and the old NW-corner void was the editor writing
+the 2×2 `River3B` for an L. The 3×3 band is a 3×3 square with two opposite corners dry: its four
+corner tiles are `River3C` and its centre is `River6A`. Loading editor-written junctions in game is
+the next check.
 
 ## Open questions
 
-- Two water/dry intersection glitches seen in game on 2026-11-24, both model-table gaps rather than
-  refused strokes: (a) water to the north and west meeting dry land to the south and east draws no
-  backing terrain at the north-west corner; (b) a cascade lower strip with a higher waterfall to the
-  west, dry land to the north, a same-height waterfall to the south and lower water to the east
-  shows grass where the west edge meets the higher fall.
-- Unmeasured river junction models (`4A`, `4B`, `5A`, `6A`, `6B`) and the `4A`/`5A`/`6A` path junction
-  notches. The generator fills them with open water or the fully filled crossing, so a base can show
-  waves under a fall and a crossing can lose its notch. Measuring them is the fix.
+- The NW-corner void seen in game on 2026-11-24 (water north and west meeting dry land south and
+  east) was the L-bend rule: the editor wrote the 2×2 corner `River3B` where the dry inside corner
+  needs `River2C`. The table and painter now do that; an editor-written L loaded in game is the
+  check.
+- The other 2026-11-24 glitch remains: a cascade lower strip with a higher waterfall to the west,
+  dry land to the north, a same-height waterfall to the south and lower water to the east shows
+  grass where the west edge meets the higher fall. That is a fall model/shape issue, not a river
+  junction; it needs a waterfall pass.
+- `River6A` (four water sides with two opposite water diagonals) was measured on the second G6
+  dump. The `4A`/`5A`/`6A` *path* junction notches are still unmeasured; a crossing loses its
+  notch. Measuring them is the fix.
 - Unmeasured `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants.
 - Building sizes and door data are incomplete for some structures. The angle exemption for bridges
   and inclines is real data, but rotating one without rotating its river or cliff leaves a structure

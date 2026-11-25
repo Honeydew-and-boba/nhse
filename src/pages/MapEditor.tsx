@@ -1180,9 +1180,9 @@ export default function MapEditor() {
             </Callout>
           )}
           <Callout kind="warn" title="Back up your save first">
-            Rivers, cliffs, paths and designs are verified in game; the river junctions this save
-            never used are drawn as open water. Back up the save before terrain work and check
-            every fall in game.
+            Rivers, cliffs, paths and designs are verified in game; the flat river junctions are
+            measured from water shapes painted in game. Back up the save before terrain work and
+            check every fall in game.
           </Callout>
           <div className="row wrap">
             <Button size="sm" icon={<Droplets />} variant={tbrush?.kind === "water" ? "primary" : "default"}

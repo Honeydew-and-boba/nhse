@@ -294,28 +294,6 @@ fn side_angle(mask: u8) -> Option<u16> {
     })
 }
 
-/// `River1A` angle points at the open (water) side: south 0, east 1, north 2, west 3.
-fn open_side_angle(mask: u8) -> Option<u16> {
-    Some(match mask {
-        S => 0,
-        E => 1,
-        N => 2,
-        W => 3,
-        _ => return None,
-    })
-}
-
-/// `River3B` angle points at the water corner: south-east 0, north-east 1, north-west 2, south-west 3.
-fn water_corner_angle(corner: u8) -> Option<u16> {
-    Some(match corner {
-        SE => 0,
-        NE => 1,
-        NW => 2,
-        SW => 3,
-        _ => return None,
-    })
-}
-
 /// `River7A`/`Cliff7A` angle points at the land (nub/high) corner: SW 0, SE 1, NE 2, NW 3.
 fn land_corner_angle(corner: u8) -> Option<u16> {
     Some(match corner {
@@ -361,59 +339,50 @@ fn cliff_corner_angle(corner: u8) -> Option<u16> {
     })
 }
 
-/// Water model and angle for a tile with the given water neighbours.
-/// `sharp` only changes a two-adjacent-side bend (`River3B` / `River3C`).
+/// One river model in its base orientation: suffix, water sides and water diagonals.
+/// The table matches the game-authored junctions measured in acre G6; see `docs/map-editor.md`.
+/// The `3B` entry is a style placeholder: `sharp` swaps it for `3C`. The game wrote `River2C` for
+/// every three-tile L it was given, so that is the only L model the autotiler emits.
+const RIVER_MODELS: [(&str, u8, u8); 15] = [
+    ("0A", 0, 0),
+    ("1A", S, 0),
+    ("2A", N | S, 0),
+    ("2C", E | S, 0),
+    ("3B", E | S, SE),
+    ("3A", N | E | S, 0),
+    ("4A", N | E | S, SE),
+    ("4B", N | E | S, NE),
+    ("5B", N | E | S, NE | SE),
+    ("4C", N | E | S | W, 0),
+    ("5A", N | E | S | W, SW),
+    ("6A", N | E | S | W, NE | SW),
+    ("6B", N | E | S | W, NE | NW),
+    ("7A", N | E | S | W, NE | SE | NW),
+    ("8A", N | E | S | W, NE | SE | SW | NW),
+];
+
+/// Water model and angle for a tile with the given water neighbours. Only diagonals between two
+/// water sides are shape corners; a diagonal on a land side is part of that bank and is ignored.
+/// `sharp` picks the square bank for a 2×2 corner (`3C`); rounded is `3B`. An L bend is always
+/// `2C`, the model the game wrote for all four L orientations.
 fn water_shape(sides: u8, corners: u8, sharp: bool) -> (u16, u16) {
-    match sides.count_ones() {
-        0 => (terrain_model("River0A"), 0),
-        1 => (
-            terrain_model("River1A"),
-            open_side_angle(sides).unwrap_or(0),
-        ),
-        2 => {
-            let corner = if sides == N | E {
-                NE
-            } else if sides == E | S {
-                SE
-            } else if sides == S | W {
-                SW
-            } else if sides == W | N {
-                NW
-            } else {
-                0
-            };
-            if corner != 0 {
-                let model = if sharp {
-                    terrain_model("River3C")
-                } else {
-                    terrain_model("River3B")
-                };
-                (model, water_corner_angle(corner).unwrap_or(0))
-            } else {
-                // N|S or E|W: straight channel. `River2A` has no extra corners either way.
-                (terrain_model("River2A"), (sides == E | W) as u16)
-            }
-        }
-        3 => (
-            terrain_model("River5B"),
-            side_angle(!sides & 0xF).unwrap_or(0),
-        ),
-        _ => {
-            // Four sides water. Measured nubs: one land diagonal is `7A`, all four is `4C`
-            // (the 1x1 pond inside a fall cross). The other combinations are unmeasured, so
-            // open water is the safe fill.
-            let land = !corners & 0xF;
-            match land.count_ones() {
-                0 => (terrain_model("River8A"), 0),
-                1 => (
-                    terrain_model("River7A"),
-                    land_corner_angle(land).unwrap_or(0),
-                ),
-                4 => (terrain_model("River4C"), 0),
-                _ => (terrain_model("River8A"), 0), // shortcut: unmeasured multi-nub junction
+    let corners = corners & relevant_corners(sides);
+    let bend = if sharp { "3C" } else { "3B" };
+    for (suffix, base_sides, base_corners) in RIVER_MODELS {
+        let suffix = match suffix {
+            "3B" => bend,
+            s => s,
+        };
+        for angle in 0..4 {
+            if rotate_sides(base_sides, angle) == sides
+                && rotate_corners(base_corners, angle) == corners
+            {
+                return (terrain_model(&format!("River{suffix}")), angle as u16);
             }
         }
     }
+    // The table covers every side/corner mask; open water is only a fallback for a bad grid.
+    (terrain_model("River8A"), 0)
 }
 
 fn water_neighbours(tiles: &[TerrainTile], w: usize, h: usize, x: usize, y: usize) -> (u8, u8) {
@@ -789,10 +758,14 @@ fn retile_water(
         let (sides, corners) = water_neighbours(tiles, w, h, x, y);
         let (model, angle) = water_shape(sides, corners, sharp);
         // A tile that is already a bend keeps its rounded/sharp look; the stroke's style only
-        // applies to bends it creates.
-        let (rounded, angular) = (terrain_model("River3B"), terrain_model("River3C"));
-        let model = if (model == rounded || model == angular)
-            && (t.model == rounded || t.model == angular)
+        // applies to bends it creates. L bends and 2×2 corners have separate pairs.
+        let pairs = [
+            (terrain_model("River2B"), terrain_model("River2C")),
+            (terrain_model("River3B"), terrain_model("River3C")),
+        ];
+        let model = if pairs
+            .iter()
+            .any(|&(a, b)| (model == a || model == b) && (t.model == a || t.model == b))
         {
             t.model
         } else {
@@ -1302,6 +1275,117 @@ mod tests {
         assert_eq!((at(1, 3).model, at(1, 3).angle), (corner, 1)); // SW, water NE
         assert_eq!((at(3, 3).model, at(3, 3).angle), (corner, 2)); // SE, water NW
         assert_eq!(at(0, 0).model, 0); // untouched land
+    }
+
+    /// The water shapes painted in game on acre G6 (two dumps), read back from the save. Raw
+    /// diagonal masks are passed so the test also covers ignoring a water diagonal on a land side.
+    #[test]
+    fn measured_river_shapes_match_the_game_dump() {
+        let all = N | E | S | W;
+        let cases = [
+            (E | S, 0, "River2C", 0, true),
+            (N | E, 0, "River2C", 1, true),
+            (N | W, 0, "River2C", 2, true),
+            (S | W, 0, "River2C", 3, true),
+            (N | E | S, 0, "River3A", 0, false),
+            (N | E | S, NE, "River4B", 0, false),
+            (N | E | S, SE, "River4A", 0, false),
+            (N | E | S, NE | SE, "River5B", 0, false),
+            (N | E | S, NW, "River3A", 0, false),
+            (N | E | S, NW | SW, "River3A", 0, false),
+            (all, 0, "River4C", 0, false),
+            (all, NE, "River5A", 2, false),
+            (N | E | W, NE | SE | SW, "River4A", 1, false),
+            (all, NE | NW, "River6B", 0, false),
+            // measured on the second dump: a plus with opposite water corners
+            (all, NE | SW, "River6A", 0, false),
+            // the other opposite pair is the same model rotated
+            (all, NW | SE, "River6A", 1, false),
+            (all, NE | NW | SE, "River7A", 0, false),
+            (all, NE | SE | SW | NW, "River8A", 0, false),
+            // an L is 2C with either corner setting; the game never produced a 2B
+            (E | S, 0, "River2C", 0, false),
+            (E | S, SE, "River3B", 0, false),
+        ];
+        for (sides, corners, name, angle, sharp) in cases {
+            assert_eq!(
+                water_shape(sides, corners, sharp),
+                (terrain_model(name), angle),
+                "{name} sides={sides:04b} corners={corners:04b}"
+            );
+        }
+    }
+
+    /// The base table plus rotation must cover every 8-neighbour mask: there are 47 distinct
+    /// side/corner classes, and the other 209 masks differ only in bank-side diagonals.
+    #[test]
+    fn the_river_table_covers_every_flat_water_mask() {
+        let mut covered = std::collections::BTreeSet::new();
+        for (_, base_sides, base_corners) in RIVER_MODELS {
+            for angle in 0..4 {
+                let sides = rotate_sides(base_sides, angle);
+                let corners = rotate_corners(base_corners, angle) & relevant_corners(sides);
+                covered.insert((sides, corners));
+            }
+        }
+        assert_eq!(covered.len(), 47);
+        for sides in 0..16u8 {
+            for corners in 0..16u8 {
+                let key = (sides, corners & relevant_corners(sides));
+                assert!(
+                    covered.contains(&key),
+                    "sides={sides:04b} corners={corners:04b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_three_tile_l_river_is_always_2c() {
+        let (w, h) = (5, 5);
+        let l = [(2usize, 1usize), (3, 1), (2, 2)];
+        for sharp in [true, false] {
+            let mut tiles = vec![TerrainTile::default(); w * h];
+            paint_water(&mut tiles, w, h, &l, true, sharp).unwrap();
+            assert_eq!(
+                (tiles[2 * h + 1].model, tiles[2 * h + 1].angle),
+                (terrain_model("River2C"), 0)
+            );
+        }
+        // an existing rounded L from an older build survives a neighbour-only stroke
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        paint_water(&mut tiles, w, h, &l, true, true).unwrap();
+        tiles[2 * h + 1].model = terrain_model("River2B");
+        paint_water(&mut tiles, w, h, &[(3, 1)], true, true).unwrap();
+        assert_eq!(tiles[2 * h + 1].model, terrain_model("River2B"));
+    }
+
+    #[test]
+    fn t_junctions_follow_the_water_corners() {
+        let (w, h) = (5, 5);
+        let center = (2usize, 2usize);
+        let arms = [(2usize, 1usize), (3, 2), (2, 3)]; // north, east, south
+        let cases = [
+            (vec![], "River3A"),
+            (vec![(3usize, 1usize)], "River4B"),
+            (vec![(3, 3)], "River4A"),
+            (vec![(3, 1), (3, 3)], "River5B"),
+            // a diagonal on the dry (land) side is bank, not a junction corner
+            (vec![(1, 1)], "River3A"),
+            (vec![(1, 1), (1, 3)], "River3A"),
+        ];
+        for (extra, name) in cases {
+            let mut tiles = vec![TerrainTile::default(); w * h];
+            let mut targets = vec![center];
+            targets.extend(arms);
+            targets.extend(extra);
+            paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+            assert_eq!(
+                tiles[center.0 * h + center.1].model,
+                terrain_model(name),
+                "{name}"
+            );
+        }
     }
 
     #[test]
