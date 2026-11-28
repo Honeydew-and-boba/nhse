@@ -7,7 +7,7 @@ use nhse_core::editing::formats;
 use nhse_core::map::field::Plaza;
 use nhse_core::map::paint;
 use nhse_core::map::render::{
-    design_tile_is_water, encode_png, render_terrain, terrain_editable, TerrainView,
+    design_tile_fixed, encode_png, render_terrain, terrain_editable, TerrainView,
 };
 use nhse_core::map::terrain::{TerrainTile, TILES_H, TILES_W};
 use nhse_core::map::ItemGrid;
@@ -243,8 +243,9 @@ pub struct MapMeta {
     /// One flag per terrain tile: the acre template lets the terrain layer own it (collision
     /// type 7). Beach, sea, rocks and river mouths are false and cannot be painted.
     pub editable: Vec<bool>,
-    /// One flag per design tile: a ground design there floats in game (river, fall, sea, tide pool).
-    pub design_water: Vec<bool>,
+    /// One flag per design tile: a ground design there never shows in game (river, fall, sea,
+    /// tide pool, rocks).
+    pub design_fixed: Vec<bool>,
 }
 
 #[tauri::command]
@@ -258,10 +259,10 @@ pub fn map_meta(state: State<AppState>) -> CmdResult<MapMeta> {
             .map(|(x, y)| terrain_editable(&acres, x, y))
             .collect();
         let (dw, dh) = s.map_design_dims();
-        let mut design_water = Vec::with_capacity(dw * dh);
+        let mut design_fixed = Vec::with_capacity(dw * dh);
         for dx in 0..dw {
             for dy in 0..dh {
-                design_water.push(design_tile_is_water(&tiles, &acres, dx, dy));
+                design_fixed.push(design_tile_fixed(&tiles, &acres, dx, dy));
             }
         }
         Ok(MapMeta {
@@ -276,7 +277,7 @@ pub fn map_meta(state: State<AppState>) -> CmdResult<MapMeta> {
                 .map(|t| t.elevation.min(u8::MAX as u16) as u8)
                 .collect(),
             editable,
-            design_water,
+            design_fixed,
         })
     })
 }

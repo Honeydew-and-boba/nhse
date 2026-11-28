@@ -51,6 +51,12 @@ pub fn collision_is_water(c: u8) -> bool {
     matches!(c, 1 | 5 | 12 | 15 | 43 | 46)
 }
 
+/// True for the collision types the game draws as rock above the ground layer. A ground design
+/// under one of them never shows in game.
+pub fn collision_is_rock(c: u8) -> bool {
+    matches!(c, 41 | 42 | 45)
+}
+
 /// Color of a pixel (x, y in 0..16) of a pre-defined acre, or `None` if transparent (terrain-driven).
 pub fn acre_pixel(acre: u16, x: usize, y: usize) -> Option<Rgb> {
     let c = acre_collision(acre, x, y)?;
@@ -72,9 +78,10 @@ pub fn terrain_editable(acres: &[u16], x: usize, y: usize) -> bool {
     acre_pixel(terrain_acre(acres, x, y), x % 16, y % 16).is_none()
 }
 
-/// True when a ground design at design-grid tile `(dx, dy)` would float in game: terrain water,
-/// open sea or a tide pool. Beach sand and solid template ground accept a design.
-pub fn design_tile_is_water(tiles: &[TerrainTile], acres: &[u16], dx: usize, dy: usize) -> bool {
+/// True when a ground design at design-grid tile `(dx, dy)` would be hidden or float in game:
+/// terrain water, or an acre-template pixel the game draws itself (sea, sea edge, river mouth,
+/// tide pool, rocks). Beach sand and solid template ground accept a design.
+pub fn design_tile_fixed(tiles: &[TerrainTile], acres: &[u16], dx: usize, dy: usize) -> bool {
     let tx = dx as i64 - 16;
     if tx >= 0 && (tx as usize) < TILES_W && dy < TILES_H {
         let t = &tiles[tx as usize * TILES_H + dy];
@@ -83,7 +90,8 @@ pub fn design_tile_is_water(tiles: &[TerrainTile], acres: &[u16], dx: usize, dy:
         }
     }
     let acre = acres.get((1 + dy / 16) * 9 + dx / 16).copied().unwrap_or(0);
-    acre_collision(acre, dx % 16, dy % 16).is_some_and(collision_is_water)
+    acre_collision(acre, dx % 16, dy % 16)
+        .is_some_and(|c| collision_is_water(c) || collision_is_rock(c))
 }
 
 /// Inputs needed to draw the terrain.
@@ -333,12 +341,17 @@ mod tests {
         );
 
         let mut tiles = vec![TerrainTile::default(); TILES_W * TILES_H];
-        assert!(design_tile_is_water(&tiles, &acres, 96, 94), "open sea");
-        assert!(!design_tile_is_water(&tiles, &acres, 96, 85), "beach sand");
-        assert!(!design_tile_is_water(&tiles, &acres, 96, 80), "land row");
+        assert!(design_tile_fixed(&tiles, &acres, 96, 94), "open sea");
+        assert!(!design_tile_fixed(&tiles, &acres, 96, 85), "beach sand");
+        assert!(!design_tile_fixed(&tiles, &acres, 96, 80), "land row");
+
+        // Rocks are drawn by the template above the ground layer, so a design never shows.
+        let mut rocks = vec![0u16; 72];
+        rocks[6 * 9 + 6] = 304; // a fully rocky acre template
+        assert!(design_tile_fixed(&tiles, &rocks, 96, 80), "rocks");
 
         // A river under the design floats a design too, even on a custom acre.
         tiles[0].model = enum_value("TerrainUnitModel", "River0A").unwrap() as u16;
-        assert!(design_tile_is_water(&tiles, &[0u16; 72], 16, 0));
+        assert!(design_tile_fixed(&tiles, &[0u16; 72], 16, 0));
     }
 }

@@ -27,7 +27,7 @@ because this is the map editor's reference.
 - Plots are terrain-aligned: `x % 2 == w % 2` and `y % 2 == h % 2`. Dragging moves in 2-item
   steps, which preserves that.
 - `Plaza { x, z }` stores the top-left in absolute item tiles. The editor draws a neutral 24×20
-  item tile (12×10 terrain) overlay from it. The plaza is not selectable or editable. The probe
+  item tile (12×10 terrain) overlay from it. The plaza is not selectable or editable. The sample
   save's value is X108, Y130 in layer coords (absolute z 162).
 
 ## Footprints
@@ -130,11 +130,11 @@ paintings, so `MyDesignMap` never holds one. Values at or above `pattern_count` 
 unknown value of some other kind; they keep the magenta marker and show as
 `Unknown ground value 0x…` in the readout instead of indexing the wrong list.
 
-The editor refuses to write a design where it would float in game: a river or fall terrain model,
-or an acre-template pixel the game draws as sea, sea edge, river mouth or tide pool
-(`render.rs::design_tile_is_water`). Beach sand and solid template ground still accept a design.
-There is no red preview; the skipped tiles are simply not written. Erasing a design on water is
-still allowed, so an earlier stroke can be cleaned up.
+The editor refuses to write a design where it never shows in game: a river or fall terrain model,
+or an acre-template pixel the game draws itself — sea, sea edge, river mouth, tide pool or rocks
+`41`/`42`/`45` (`render.rs::design_tile_fixed`). Beach sand and solid template ground still accept
+a design. There is no red preview; the skipped tiles are simply not written. Erasing a design on
+water or rock is still allowed, so an earlier stroke can be cleaned up.
 
 Preview notes:
 
@@ -142,7 +142,8 @@ Preview notes:
   and `design/pro/<index>?sheet=0` returns a single 32×32 sheet (without `sheet` a PRO design is a
   2×2 overview). `asset()` in `src/lib/items.ts` yields the right URL on Windows and macOS.
 - Thumbnails are cached per design index and cache-busted once per map-editor mount (`?r=`), so an
-  edited design reloads when the page is reopened but not while it stays open.
+  edited design reloads when the page is reopened but not while it stays open. The grid was checked
+  in game and reads correctly.
 - Normal design slots are proven: `0 … pattern_count-1` (100 on 3.0) is a normal design index.
 
 ## Painting paths and designs
@@ -213,21 +214,21 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 
 > **Status.** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded cliff *and* river
 > corners, all four waterfall families in all four directions, recessed and consecutive falls,
-> painted paths and ground designs, three-tile river L bends (`2C`), and moving buildings. The river
+> painted paths and ground designs (now beyond the original sample tiles: the 2026-11-28 pass
+> confirmed three-tile path Ls written with both **Corners** styles and re-checked the erase
+> brushes), three-tile river L bends (`2C`), and moving buildings. The river
 > junction table was measured from water shapes painted in game on acre G6 (2026-11-25, two dumps),
 > including `River6A`; every flat model the editor emits came out of those dumps, and editor-written
 > L, T and plus junctions then loaded in game with no broken bank. Rotated orientations were not
 > loaded separately. The fall table came from a two-level cake, a recessed pad and the sample save's
 > gorge (2026-11-25). A 13-tile one-corner build (2026-11-28) then confirmed the six one-corner
-> middle states, so the generator now reads both edge masks and writes the catalogue model;
-> `probe check` re-derives all 55 fall tiles of that build save and all 42 of `save/` with no
-> mismatch.
+> middle states, so the generator now reads both edge masks and writes the catalogue model; every
+> fall tile of that build save and of `save/` re-derives exactly.
 > **Back up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
-square brush from 1×1 to 5×5 (default 1×1, matching the game's one-tile tool; the shape fixer is
-always one tile). A drag is one
+square brush from 1×1 to 5×5 (default 1×1, matching the game's one-tile tool). A drag is one
 stroke and one undo entry (terrain bytes snapshot). The backend works on a copy and only commits
 if every tile is supported, so a rejected stroke writes nothing.
 
@@ -254,9 +255,11 @@ the same way.
 - **Erase water** turns a river/fall tile back into grass at the same height and restores a cliff
   face if the tile is now at a plateau edge.
 - **Fix one tile / falls** stamps one model and angle for edges the autotiler refuses, and for
-  waterfall models; also one undo entry. The list uses plain-language labels (see the tables below)
-  and any fall model the autotiler never writes is treated as hand-set: later water strokes leave it
-  alone.
+  waterfall models; also one undo entry. The panel entry has been taken out of the UI, but the code
+  path is kept for debugging: `commitShape` in `src/pages/MapEditor.tsx` plus the `shape` terrain
+  brush in `TerrainBrush`. Re-adding a picker only needs the model list again (git history has the
+  plain-language labels). Any fall model the autotiler never writes is treated as hand-set: later
+  water strokes leave it alone.
 
 ### Measured river table
 
@@ -417,9 +420,10 @@ or south drop (the ccw `Fall422` is measured on both axes; the cw blend only on 
 whose middles are `Fall408`).
 
 A corner fall (water dropping in two directions at once) is not generated: there is no corner-fall
-model, so the tile stays a river and the toast counts it. A drop of more than one level is refused
-(add a one-tile terrace); the height brush already refuses a two-level step, so through the editor
-this refusal is unreachable and only protects a hand-edited dump.
+model, so the tile stays a river and the toast counts it; a player attempt was confirmed refused on
+2026-11-28. A drop of more than one level is refused (add a one-tile terrace) and was also confirmed
+refused when attempted; the height brush already refuses a two-level step, so through the editor that
+refusal is unreachable and only protects a hand-edited dump.
 
 Consecutive falls (one fall landing on the next) are generated on every level. The lower strip of a
 cascade keeps `Fall403` in its middle, and a strip that drops into water keeps `Fall400`.
@@ -466,11 +470,10 @@ catalogue's signature table and are not separately dumped; the mask reading and 
 are. The ends' one-corner states (`201`/`203`/`205`–`207`, `301`/`303`/`305`–`307`) are unmeasured
 and not written: an end whose closed-side corner is dry keeps its family's end model.
 
-Checked against `save-ref-1wide`: T34,23 is `Fall300` with back `0111` and base `0111`, T37,23 is
-`Fall200` with `1110`/`1110`, and both match the matrix exactly. That also fixes the sub-cell order:
-sub-cell 0 is the west side for a south drop (angle 0). The 13-tile build in
-`docs/local/fall-corner-probes.md` (fork-only) then confirmed all six one-corner middles in one
-dump; every column matched its predicted model.
+Checked against a one-wide fall strip save: T34,23 is `Fall300` with back `0111` and base `0111`,
+T37,23 is `Fall200` with `1110`/`1110`, and both match the matrix exactly. That also fixes the
+sub-cell order: sub-cell 0 is the west side for a south drop (angle 0). A 13-tile build in game
+then confirmed all six one-corner middles in one dump; every column matched its predicted model.
 
 
 ### Rules that keep a save loadable
@@ -495,18 +498,21 @@ dump; every column matched its predicted model.
 - Only acre-template type-7 tiles are painted. `paint_road`, `paint_water` and `paint_height` filter
   the target list, the UI leaves the rest out of the preview, and the two terrain commands restore
   every fixed tile after the ring pass, so a stroke cannot change beach, sea, rocks, a tide pool or a
-  river mouth. Erase is filtered the same way. Ground designs use `design_tile_is_water` instead, so
-  sand keeps designs while rivers, sea and tide pools do not. Undo still restores a whole snapshot.
-- The Files tab's whole-terrain dump import and the Fix one tile stamp write bytes directly and skip
-  both checks.
+  river mouth. Erase is filtered the same way; this was re-checked in game on 2026-11-28 for beach,
+  sea, rocks and a river mouth. Ground designs use `design_tile_fixed` instead, so sand keeps
+  designs while rivers, sea, tide pools and rocks do not. Undo still restores a whole snapshot.
+- The Files tab's whole-terrain dump import and the (now UI-hidden) Fix one tile stamp write bytes
+  directly and skip both checks.
 
 ### Height display
 
 The terrain preview uses four clearly stepped grass colours (dark low, pale high) and dirt/peach
 cliff faces. Cliff tiles draw their wall on the low sides: `Cliff3B` shows a rounded outside corner
-and `Cliff3C` a sharp one, so the **Corners** choice is visible before saving. The map canvas draws
-a contour line where two terrain tiles differ in elevation, the bottom-left readout shows
-`Height N`, and the View menu has a **Height contours** toggle.
+and `Cliff3C` a sharp one, so the **Corners** choice is visible before saving. The wedge a rounded
+`Cliff3B` corner cuts back is drawn as the grass of the elevation one level below it, not as cliff
+colour. The map canvas draws a contour line where two terrain tiles differ in elevation, the
+bottom-left readout shows `Height N`, and the View menu has a **Height contours** toggle (off until
+switched on).
 
 The save field is a `u16`, but the game only supports elevations 0–3. The brush refuses to write
 above 3 and refuses to go below 0. A save that already contains a higher value is left untouched:
@@ -519,8 +525,8 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
 - A tile that is already a river bend keeps its rounded/sharp style when a later stroke re-tiles the
   ring, so a hand-picked `River3C` survives; this covers both the L pair (`2B`/`2C`) and the 2×2
   pair (`3B`/`3C`). Hand-set fall models (any model the autotiler never writes, such as `Fall205`)
-  and `Cliff3C` corners are kept the same way. Use **Fix one tile** to change a bend or a corner by
-  hand.
+  and `Cliff3C` corners are kept the same way. Changing a bend or a corner by hand now needs the
+  `shape` brush code path, because its panel entry was taken out of the UI.
 - A saddle (two low diagonals, no low side) or a strip with no connected same-height side is still
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
 - A one-tile fall that drops into a multi-tile pool can sit over a 4-water-side/2-land-diagonal
@@ -552,6 +558,15 @@ moved buildings and the tree/building warning. Building drag handles only move m
 fixed structure no longer moves when its door is dragged, and a villager house dragged by its door
 loaded on its new plot. A bridge angle change of 1 → 0 rotated the model 90° in game but left the
 river in place, so the bridge lay parallel to the river and could not be crossed.
+
+The 2026-11-28 pass also confirmed the editor side of the fixes from 2026-11-24: three-tile path Ls
+written with **Corners → Rounded** (`2B`) and **Sharp** (`2C`) both render as chosen in game, paths,
+water, raise, lower and erase write nothing on beach, sea, rocks and a river mouth (with no red
+preview), a design paints on beach sand and is refused on rivers, the sea, tide pools and rocks, the
+design thumbnail grid reads correctly, and Pan/Area/Erase/Select all drop the ground and terrain
+brushes. A corner fall and a two-level drop were both attempted and refused, as designed. Fixed after
+that pass: the grass wedge cut back by a rounded `Cliff3B` corner now previews as the level below
+instead of the cliff colour. The **Height contours** toggle is off until switched on.
 
 The generator's cliff shapes were checked against an emulator shape sheet: 1×1 stays `Cliff0A` at
 elevations 1–3, 2×1 stays `Cliff1A`, a 3×1 ridge stays `Cliff2A`, 3×3 stays `3B`/`5B`/`Base`. The
@@ -589,13 +604,13 @@ not the `Fall208`/`Fall422` the editor had been writing for a flush strip. The p
 as the recessed middle and `Fall304`/`Fall204` for a dry-back fall into a river. A staggered upper
 strip gave `Fall422` next to a recessed end for a north drop as well. The pool added at the cake's
 foot showed a cascade over water is the plain `Fall200`/`Fall400`/`Fall300` family, and re-deriving
-every fall tile of the save matches all 81 of them, model and angle (`probe -- save check`).
+every fall tile of the save matches all 81 of them, model and angle.
 
-The 2026-11-28 pass built the 13-tile one-corner sheet from `docs/local/fall-corner-probes.md` on
-acre G8 and saved in game. Every tile matched its prediction, `300, 401, 403, 404, 403, 402, 405,
-408, 407, 408, 406, 400, 200` west to east, which confirms the mask reading, the sub-cell order and
-the six one-corner middle models. The generator now reads both masks; `probe check` re-derives all 55
-fall tiles of that build save and all 42 of `save/` with no mismatch.
+The 2026-11-28 pass built a 13-tile one-corner sheet on acre G8 and saved in game. Every tile
+matched its prediction, `300, 401, 403, 404, 403, 402, 405, 408, 407, 408, 406, 400, 200` west to
+east, which confirms the mask reading, the sub-cell order and the six one-corner middle models. The
+generator now reads both masks, and every fall tile of that build save and of `save/` re-derives
+exactly.
 
 ## Open questions
 
@@ -606,11 +621,12 @@ fall tiles of that build save and all 42 of `save/` with no mismatch.
   game would close the middle group.
 - No `2xx`/`3xx` model has a wet sub-cell on the strip's closed side, so an end tile whose pool or
   river behind continues past the strip's end has no model in its own family. What the game writes
-  there is unknown; the probe layout avoids the case.
+  there is unknown; the test builds so far avoid the case.
 - The `4A`/`5A`/`6A` *path* junction notches are still unmeasured; a crossing loses its notch.
   Measuring them is the fix.
 - Unmeasured `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants.
-- Building sizes and door data are incomplete for some structures. The angle exemption for bridges
-  and inclines is real data, but rotating one without rotating its river or cliff leaves a structure
-  the player cannot use.
+- Building sizes and door data are incomplete for some structures. Only the movable kinds need a
+  usable plot; the fixed structures are never moved, so their approximate plots affect the drawing
+  only. The angle exemption for bridges and inclines is real data, but rotating one without rotating
+  its river or cliff leaves a structure the player cannot use.
 

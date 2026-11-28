@@ -267,9 +267,18 @@ fn shade(c: Rgb, f: f32) -> Rgb {
     ]
 }
 
-/// Wall pixels of a cliff tile from its measured model and angle. `None` means the shape is not
+/// What a cliff tile's pixel shows: the wall face, the plateau body, or the lower ground a
+/// rounded corner cuts back to.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CliffPixel {
+    Wall,
+    Body,
+    Below,
+}
+
+/// Pixels of a cliff tile from its measured model and angle. `None` means the shape is not
 /// measured, so the caller keeps the neutral all-four-edges look.
-fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
+fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<CliffPixel> {
     const N: u8 = 1;
     const E: u8 = 2;
     const S: u8 = 4;
@@ -292,7 +301,11 @@ fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
                 2 => nub_tr(x, y),
                 _ => nub_tl(x, y),
             };
-            return Some(nub);
+            return Some(if nub {
+                CliffPixel::Wall
+            } else {
+                CliffPixel::Body
+            });
         }
         _ => return None,
     };
@@ -310,12 +323,20 @@ fn cliff_wall(m: u16, angle: u16, x: i32, y: i32) -> Option<bool> {
             if low & bits != bits || px >= R as i32 || py >= R as i32 {
                 continue;
             }
-            // A rounded corner pulls the wall back from the tile corner as a quarter arc.
+            // A rounded corner pulls the wall back from the tile corner as a quarter arc; the
+            // wedge inside it is the ground below, not the plateau.
             let d = ((px * px + py * py) as f32).sqrt();
-            wall = d > R - T as f32 && d <= R;
+            if d <= R - T as f32 {
+                return Some(CliffPixel::Below);
+            }
+            wall = d <= R;
         }
     }
-    Some(wall)
+    Some(if wall {
+        CliffPixel::Wall
+    } else {
+        CliffPixel::Body
+    })
 }
 
 /// Sign of the quarter of a rounded ground-path bend that shows grass, or `None` when the tile is
@@ -385,8 +406,10 @@ pub fn tile_pixel(t: &TerrainTile, x: i32, y: i32, road_corner: Option<(i32, i32
     if is_cliff(m) {
         let base = CLIFF[(t.elevation as usize).min(3)];
         return match cliff_wall(m, t.angle, x, y) {
-            Some(true) => CLIFF_EDGE,
-            Some(false) => base,
+            Some(CliffPixel::Wall) => CLIFF_EDGE,
+            // inside the arc the wall is pulled back, so the level below shows through
+            Some(CliffPixel::Below) => grass(t.elevation.saturating_sub(1)),
+            Some(CliffPixel::Body) => base,
             None if x == 0 || y == 0 || x == 15 || y == 15 => CLIFF_EDGE,
             None => base,
         };
@@ -432,15 +455,27 @@ mod tests {
 
     #[test]
     fn cliff_wall_shows_rounded_and_sharp_corners() {
+        use CliffPixel::{Below, Body, Wall};
         // NW outside corner: rounded pulls the wall back, sharp keeps the right angle
-        assert_eq!(cliff_wall(0x1F, 0, 0, 0), Some(false)); // Cliff3B
-        assert_eq!(cliff_wall(0x20, 0, 0, 0), Some(true)); // Cliff3C
+        assert_eq!(cliff_wall(0x1F, 0, 0, 0), Some(Below)); // Cliff3B, the cut-back wedge
+        assert_eq!(cliff_wall(0x1F, 0, 1, 5), Some(Wall)); // the rounded face itself
+        assert_eq!(cliff_wall(0x1F, 0, 7, 7), Some(Body)); // plateau inside the arc
+        assert_eq!(cliff_wall(0x20, 0, 0, 0), Some(Wall)); // Cliff3C
                                                            // straight face: Cliff5B angle 1 has the low side south
-        assert_eq!(cliff_wall(0x25, 1, 8, 15), Some(true));
-        assert_eq!(cliff_wall(0x25, 1, 8, 2), Some(false));
+        assert_eq!(cliff_wall(0x25, 1, 8, 15), Some(Wall));
+        assert_eq!(cliff_wall(0x25, 1, 8, 2), Some(Body));
         // pillar: body in the middle, wall on every side
-        assert_eq!(cliff_wall(0x16, 0, 8, 8), Some(false));
-        assert_eq!(cliff_wall(0x16, 0, 8, 0), Some(true));
+        assert_eq!(cliff_wall(0x16, 0, 8, 8), Some(Body));
+        assert_eq!(cliff_wall(0x16, 0, 8, 0), Some(Wall));
+        // the cut-back wedge is the level below, so a height-2 corner shows height-1 grass
+        let corner = TerrainTile {
+            model: 0x1F,
+            angle: 0,
+            elevation: 2,
+            ..Default::default()
+        };
+        assert_eq!(tile_pixel(&corner, 0, 0, None), grass(1));
+        assert_eq!(tile_pixel(&corner, 7, 7, None), CLIFF[2]);
         // an unmeasured model keeps the neutral fallback
         assert_eq!(cliff_wall(0x1D, 0, 0, 0), None);
     }

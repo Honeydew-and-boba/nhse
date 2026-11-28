@@ -31,49 +31,6 @@ const PATHS = [
   { id: "tile", label: "Tile", color: "#5e84b2" },
   { id: "wood", label: "Wood", color: "#aa784a" },
 ];
-/** Verified terrain models offered by the manual shape fixer, with plain-language labels. */
-const TERRAIN_SHAPES: [name: string, label: string][] = [
-  ["River0A", "Spring (single water tile)"],
-  ["River1A", "River end (one side open)"],
-  ["River2A", "Straight river"],
-  ["River3B", "Rounded river bend"],
-  ["River3C", "Sharp river bend"],
-  ["River5B", "River junction (three sides)"],
-  ["River7A", "Wide river, one dry corner"],
-  ["River8A", "Open water (all sides)"],
-  ["Cliff0A", "Free-standing 1×1 pillar"],
-  ["Cliff1A", "Cliff end (one connected side)"],
-  ["Cliff2A", "1-wide cliff ridge"],
-  ["Cliff3B", "Rounded outside corner"],
-  ["Cliff3C", "Sharp outside corner"],
-  ["Cliff5B", "Straight cliff edge"],
-  ["Cliff7A", "Cliff edge with a sunken diagonal"],
-  ["Cliff8", "Flat top, no edges"],
-  ["Fall100", "Fall, one tile alone, dropping into water"],
-  ["Fall101", "Fall, one tile alone, ending on land"],
-  ["Fall102", "Fall, one tile alone, dry back into water"],
-  ["Fall103", "Fall, one tile alone, dry back onto land"],
-  ["Fall200", "Fall into water, counter-clockwise end"],
-  ["Fall300", "Fall into water, clockwise end"],
-  ["Fall400", "Fall into water, middle"],
-  ["Fall401", "Fall middle, foot meets land on the counter-clockwise corner"],
-  ["Fall402", "Fall middle, foot meets land on the clockwise corner"],
-  ["Fall404", "Fall middle, foot meets land on both corners"],
-  ["Fall405", "Fall middle, lip meets land on the counter-clockwise corner"],
-  ["Fall406", "Fall middle, lip meets land on the clockwise corner"],
-  ["Fall407", "Fall middle, lip meets land on both corners"],
-  ["Fall202", "Fall onto land, counter-clockwise end"],
-  ["Fall302", "Fall onto land, clockwise end"],
-  ["Fall403", "Fall onto land, middle"],
-  ["Fall422", "Fall onto land, blend beside a dry end (counter-clockwise)"],
-  ["Fall421", "Fall onto land, blend beside a dry end (clockwise)"],
-  ["Fall204", "Dry-back fall, counter-clockwise end"],
-  ["Fall304", "Dry-back fall, clockwise end"],
-  ["Fall408", "Dry-back fall, middle"],
-  ["Fall208", "Recessed fall, counter-clockwise end"],
-  ["Fall308", "Recessed fall, clockwise end"],
-  ["Fall424", "Recessed fall, middle"],
-];
 const MAP_W = 9 * 32, MAP_H = 8 * 32; // whole map in item tiles
 const PLAZA_W = 24, PLAZA_H = 20; // 12×10 terrain tiles
 const MIN_S = 1, MAX_S = 40;
@@ -166,14 +123,13 @@ export default function MapEditor() {
   const [sharp, setSharp] = useState(false);
   // ground paths keep their own corner style: the game stores the same bend as rounded or sharp
   const [roadSharp, setRoadSharp] = useState(false);
-  const [shape, setShape] = useState({ model: 0, angle: 0 });
   const [patterns, setPatterns] = useState<DesignInfo[] | null>(null);
   const [stroke, setStroke] = useState<[number, number][]>([]);
   const strokeTiles = useRef(new Set<string>());
   const terrainTargets = useRef<[number, number][]>([]);
   const terrainSeen = useRef(new Set<string>());
   const groundBefore = useRef<{ designs: number[]; terrain: Promise<Uint8Array> } | null>(null);
-  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true, contours: true });
+  const [show, setShow] = useState({ other: true, grid: true, buildings: true, plaza: true, sprites: true, designs: true, contours: false });
   const [pick, setPick] = useState<Pick>(null);
   const [selBuilding, setSelBuilding] = useState<number | null>(null);
   const [floating, setFloating] = useState<[number, number][]>([]);
@@ -675,7 +631,7 @@ export default function MapEditor() {
     const [dw, dh] = meta.design_dims;
     const designs = uniq(tiles.map(([x, y]) => [x >> 1, y >> 1] as [number, number]))
       .filter(([x, y]) => x < dw && y < dh)
-      .filter(([x, y]) => brush.kind !== "design" || !meta.design_water[x * dh + y]);
+      .filter(([x, y]) => brush.kind !== "design" || !meta.design_fixed[x * dh + y]);
     const terrain = uniq(
       tiles
         .map(([x, y]) => terrainTile(x, y))
@@ -1082,15 +1038,6 @@ export default function MapEditor() {
   // ------------------------------------------------------------- panels (closures over editor state)
   function renderTile() {
     const selItem = selTile ? grid().get(selTile[0], selTile[1]) : null;
-    const terrainEnums = gd.enums.TerrainUnitModel ?? [];
-    const shapeOptions = TERRAIN_SHAPES
-      .map(([name, label]) => ({ value: terrainEnums.find(([n]) => n === name)?.[1] ?? -1, label }))
-      .filter((o) => o.value >= 0);
-    const selectedShape = shape.model || shapeOptions[0]?.value || 0;
-    const applyShape = (model: number, angle: number) => {
-      setShape({ model, angle });
-      if (tbrush?.kind === "shape") setTbrush({ kind: "shape", model, angle });
-    };
     return (
       <div className="col" style={{ gap: 16 }}>
         <div className="col" style={{ gap: 8 }}>
@@ -1186,11 +1133,6 @@ export default function MapEditor() {
               left unchanged, and painting is limited to 0–3.
             </Callout>
           )}
-          <Callout kind="warn" title="Back up your save first">
-            Rivers, cliffs, paths and designs are verified in game; the flat river junctions are
-            measured from water shapes painted in game. Back up the save before terrain work and
-            check every fall in game.
-          </Callout>
           <div className="row wrap">
             <Button size="sm" icon={<Droplets />} variant={tbrush?.kind === "water" ? "primary" : "default"}
               onClick={() => { setGround(null); setTbrush({ kind: "water" }); setTool("place"); }}>Water</Button>
@@ -1212,22 +1154,11 @@ export default function MapEditor() {
             <Select value={sharp ? 1 : 0} onChange={(v) => setSharp(v === 1)}
               options={[{ value: 0, label: "Rounded" }, { value: 1, label: "Sharp" }]} style={{ width: 110 }} />
           </div>
-          <div className="label" style={{ marginTop: 4 }}>Fix one tile / falls</div>
-          {shapeOptions.length ? (
-            <div className="row">
-              <Select value={selectedShape} onChange={(model) => applyShape(model, shape.angle)}
-                options={shapeOptions} style={{ flex: 1 }} />
-              <Button size="sm" icon={<RotateCw />} onClick={() => applyShape(selectedShape, (shape.angle + 1) & 3)}>{shape.angle * 90}°</Button>
-              <Button size="sm" variant={tbrush?.kind === "shape" ? "primary" : "default"}
-                onClick={() => { setGround(null); setTbrush({ kind: "shape", model: selectedShape, angle: shape.angle }); setTool("place"); }}>Pick</Button>
-            </div>
-          ) : <div className="tiny faint">The terrain model table is not available.</div>}
           <div className="tiny faint">
             {tbrush?.kind === "water" ? <>Drag to paint rivers. Water keeps the tile height and drops into a waterfall where it sits one level above anything lower. No river behind the fall is needed: the game draws a recessed fall into the cliff face. Water clears ground designs.</>
               : tbrush?.kind === "water-erase" ? <>Drag to erase rivers. The tile becomes grass at the same height; cliff faces next to it are restored.</>
               : tbrush?.kind === "cliff" ? <>Drag to {tbrush.delta > 0 ? "raise" : "lower"} land. Faces are generated automatically for single tiles, strips, ridges and whole plateaus; increase the brush for larger areas. Water has to be erased first. New corners use the <b>{sharp ? "sharp" : "rounded"}</b> style; corners that already exist keep theirs.</>
-              : tbrush?.kind === "shape" ? <>Click one tile to set that exact model and rotation. Use it for edges the autotiler refuses and for waterfall models; hand-set falls are kept by later water strokes.</>
-              : <>Cliffs and rivers change the terrain model itself. Paths and designs are separate. Waterfalls are generated wherever water drops one level in one of the four directions; the fall's strip ends and end caps follow the shapes measured in game.</>}
+              : <>Pick a brush and drag on the map. Rivers drop into a waterfall where the land steps down one level. Paths and designs are painted separately under Ground.</>}
           </div>
         </div>
         <div className="divider" />
