@@ -212,11 +212,17 @@ design slots from `api.designs("normal")` are filtered to non-empty ones.
 ## Painting rivers, cliffs and waterfalls
 
 > **Status.** Verified in game: cliffs, heights 0–3, rivers, sharp and rounded cliff *and* river
-> corners, straight, recessed and consecutive falls, painted paths and ground designs, three-tile
-> river L bends (`2C`), and moving buildings. The river junction table below was measured from water
-> shapes painted in game on acre G6 (2026-11-25, two dumps), including `River6A`; every flat model
-> the editor emits came out of those dumps. Loading editor-written junctions in game is the next
-> check. **Back up the save before terrain work.**
+> corners, all four waterfall families in all four directions, recessed and consecutive falls,
+> painted paths and ground designs, three-tile river L bends (`2C`), and moving buildings. The river
+> junction table was measured from water shapes painted in game on acre G6 (2026-11-25, two dumps),
+> including `River6A`; every flat model the editor emits came out of those dumps, and editor-written
+> L, T and plus junctions then loaded in game with no broken bank. Rotated orientations were not
+> loaded separately. The fall table came from a two-level cake, a recessed pad and the sample save's
+> gorge (2026-11-25). A 13-tile one-corner build (2026-11-28) then confirmed the six one-corner
+> middle states, so the generator now reads both edge masks and writes the catalogue model;
+> `probe check` re-derives all 55 fall tiles of that build save and all 42 of `save/` with no
+> mismatch.
+> **Back up the save before terrain work.**
 
 The Item panel's **Terrain** section paints `TerrainTile.model`, `angle` and `elevation` through
 `map/paint.rs` (`paint_water` / `paint_height`). It works in terrain tiles (2×2 item tiles) with a
@@ -297,7 +303,8 @@ The 15 base models taken together cover all 47 distinct side/corner classes, and
 bank. `the_river_table_covers_every_flat_water_mask` in `paint.rs` enumerates the classes, and
 `measured_river_shapes_match_the_game_dump` pins the measured models. The only river model never
 produced by the game is `River2B`, the atlas's 45° channel bank; the editor does not emit it. There
-is no flat water shape left untested.
+is no flat water shape left untested: the editor's L, T and plus output for these classes loaded in
+game on 2026-11-25 without a broken bank, corner or void.
 
 ### Measured cliff table
 
@@ -341,27 +348,48 @@ grass starts at 0; a face that changes shape keeps its old variation.
 
 A fall strip replaces the water tiles at the top edge of a one-level drop. The fall tile keeps the
 **high** elevation and its angle is the drop direction: S 0, E 1, N 2, W 3 (north is inferred by
-rotation; the other three were measured). The strip is `Fall200` at the end 90° counter-clockwise
-from the drop, `Fall300` at the opposite end, `Fall400` in the middle; a one-tile strip is
-`Fall101`. For example, a south-dropping 4-wide fall is `300, 400, 400, 200` west to east.
+rotation; the other three were measured). `ccw` below is the strip end 90° counter-clockwise from
+the drop: west for a north drop, north for an east drop, east for a south drop, south for a west
+drop.
 
 **A fall needs no water behind it and no pool below it.** A player creates a waterfall by standing
 on the plateau and painting water on the top edge: the water tile becomes the fall, the tile behind
 it stays dry grass or cliff, and the drop can end on dry land. The game then draws the fall recessed
-into the cliff face. Water behind the fall is the ordinary river case, not a requirement, and it was
-wrong to refuse the dry one.
+into the cliff face. Water behind the fall is the ordinary river case, not a requirement.
 
-The model follows what is behind and below the fall. All of these were measured on a dedicated test
-acre of a real 3.0.3 save (acre G6: four 2×4 pads with a 2-wide fall on each side, a 3×3 pad with a
-1×1 fall on each side, and a two-tier "cake" with 2-wide falls on every side of both tiers), plus
-the two-level gorge:
+Two neighbours pick each tile's family: whether there is water behind it (a river at the same
+height, or a fall one level up) and whether there is water at its base (a river, or the fall below
+in a cascade). The position in the strip then picks the variant.
 
-| Behind the fall | Below the fall | Ends (CCW / CW) | Middle |
-|---|---|---|---|
-| river at the same height, or a fall one level up | water, or the fall below in a cascade | `Fall200` / `Fall300` | `Fall400` |
-| dry land or cliff at the same height (recessed) | dry land | `Fall208` / `Fall308` | `Fall400` (unmeasured) |
-| dry land or cliff at the same height | the fall below (cascade top) | `Fall204` / `Fall304` | `Fall408` |
-| a fall one level up (cascade bottom) | dry land | `Fall208` (east drop) / `Fall302`; `Fall202` (west drop) / `Fall308` | `Fall403`, with `Fall422` (east drop) or `Fall421` (west drop) second from the north end |
+Those two neighbours are only the *middle* of the two edges the game models. Each edge is a 4-bit
+mask whose corner bits are the two diagonals: a fall whose lip or base meets land on a diagonal needs
+a different model, and the four measured families above are only the all-water and no-water corners
+of that table. The catalogue is in **Fall model catalogue** below.
+
+| Behind the fall | Base | ccw end | cw end | Middle |
+|---|---|---|---|---|
+| water, or a fall one level up | water, or a fall below | `Fall200` | `Fall300` | `Fall400` |
+| water, or a fall one level up | dry land | `Fall202` | `Fall302` | `Fall403` |
+| dry land or cliff | water, or a fall below | `Fall204` | `Fall304` | `Fall408` |
+| dry land or cliff | dry land | `Fall208` | `Fall308` | `Fall424` |
+
+So a plain 4-wide south-dropping fall into a river is `300, 400, 400, 200` west to east, the same
+fall onto dry land is `308, 403, 403, 208`, and a dry-back fall into a river is
+`304, 408, 408, 204`.
+
+The family is picked per tile, so a strip can begin recessed and continue as a cascade: the tile
+directly inside an end whose model is `Fall208`/`Fall308` (dry land behind that end) becomes
+`Fall422` on the ccw side or `Fall421` on the cw side.
+
+Measured in game on a real 3.0.3 save (2026-11-25): a two-level cake with 4-wide falls on all four
+sides of both tiers gave every direction and the flush cascade, a recessed pad gave the `Fall424`
+middle and the dry-back-into-water ends, the two-level gorge gave the staggered ends and the
+`422`/`421` blends, and earlier pads gave the plain strip. Re-deriving every fall tile of the
+sample save from these rules matches all 81 of them, model and angle.
+
+A cascade that drops into water uses the plain family even with a higher fall behind it. That is the
+2026-11-24 seam context: the editor wrote `Fall208`/`Fall422` at a flush cascade end, which is the
+recessed art, and that mismatch was the grass seam. The models now match the game's own.
 
 A one-tile fall (a strip of length 1) does not use the strip table. Its model is a 2×2 table of
 whether water is behind and below it, measured from a game-made reference save in all four
@@ -382,20 +410,67 @@ the fall with a dry back over water (`Fall102`) and both levels of a one-tile ca
 `Fall101` for every dry back, the earlier behaviour, makes a recessed fall's back transparent and
 picks the wrong model at a one-tile cascade top.
 
-Re-deriving every fall tile of the sample save from the rules above reproduces all 74 of them,
-model and angle, including both gorge tiers and every pad in the test acre. Contexts the save never
-showed (a north- or south-dropping cascade bottom, a recessed strip longer than two tiles, a dry
-back over a pool) fall back to the plain `Fall200`/`Fall300`/`Fall400` strip, which is verified in
-game, so those are the cases to look at first if a fall looks wrong.
+A few states are inferred rather than dumped: a fall with a *same-height* river behind rather than a
+higher fall (the one-tile table groups the two, and both masks read the same), `Fall421` on a north
+or south drop (the ccw `Fall422` is measured on both axes; the cw blend only on east/west), and the
+`Fall408` middle of a dry-back strip over a river (its ends are identical to the cascade tops',
+whose middles are `Fall408`).
 
 A corner fall (water dropping in two directions at once) is not generated: there is no corner-fall
 model, so the tile stays a river and the toast counts it. A drop of more than one level is refused
 (add a one-tile terrace); the height brush already refuses a two-level step, so through the editor
 this refusal is unreachable and only protects a hand-edited dump.
 
-Consecutive falls (one fall landing on the next) are generated on every level. The measured cascade
-variants are in the model list; the lower strip of a cascade keeps `Fall403` in its middle on every
-level.
+Consecutive falls (one fall landing on the next) are generated on every level. The lower strip of a
+cascade keeps `Fall403` in its middle, and a strip that drops into water keeps `Fall400`.
+
+### Fall model catalogue
+
+The game ships a parameter table for every terrain model (`FieldLandMakingUnitModelParam`, CSV at
+`https://wuffs.org/acnh/bcsv_150/csv/FieldLandMakingUnitModelParam.csv`). Each row carries a
+32-value signature: two layers × 4×4 sub-cells (ground layer `0` base / `1` river; wall layer `1`
+fall water / `3` cliff / `4` nothing above). The 47 fall models are grouped by strip position (one
+tile, the two ends, the middle), and inside each group they are a product of two edge masks,
+`[W corner, W mid, E mid, E corner]`:
+
+- the **back mask**: the lip's four sub-cells. The two middle bits are the tile's own column above
+  (water behind or not); the corner bits are the two diagonals behind it.
+- the **base mask**: the same four sub-cells below the tile, with the diagonals below in the corners.
+
+A dry middle forces `0000`, so each mask has exactly five states: `1111` (both diagonals wet), `1110`
+(west diagonal dry), `0111` (east diagonal dry), `0110` (both dry), `0000` (no water at all). Those
+five states, not a free choice of art, are the model variants. `G` = base index, `U` = back index:
+
+| | U0 `1111` | U1 `1110` | U2 `0111` | U3 `0110` | U4 `0000` |
+|---|---|---|---|---|---|
+| **G0 `1111`** | 400 | 405 | 406 | 407 | 408 |
+| **G1 `1110`** | 401 | 414 | 413 | 415 | 416 |
+| **G2 `0111`** | 402 | 410 | 409 | 411 | 412 |
+| **G3 `0110`** | 404 | 418 | 417 | 419 | 420 |
+| **G4 `0000`** | 403 | 422 | 421 | 423 | 424 |
+
+The strip ends use a 3×3 subset: every end model has the sub-cell on the strip's closed side dry, so
+`2xx` takes masks 1, 3, 4 and `3xx` takes 2, 3, 4, both as `index = 3·G + U`. One-tile falls use the
+`0110`/`0000` pairs that are the measured `Fall100`–`Fall103` table, `index = 2·G + U`. The `4xx`
+names are not a formula — the sheet order is 9 + 16 and four name pairs are swapped against the
+product order (409/410, 413/414, 417/418, 421/422) — so the matrix above is the reference.
+
+**The generator reads both edge masks.** A middle tile's model is the matrix entry for its own
+`(base, back)` masks, read from the 3×3 neighbourhood; a dry middle bit forces `0000`. The six
+one-corner middles (`401`/`402`/`404`/`405`/`406`/`407`) were confirmed by the 2026-11-28 build: all
+13 predicted models came back, including the `400`/`403`/`408` controls and both `300`/`200` ends.
+The ends still use the family table above, and the one-tile table is unchanged.
+
+The middle cross terms (`409`–`420`, `423`, where both edges have a dry diagonal) come from the
+catalogue's signature table and are not separately dumped; the mask reading and the sub-cell order
+are. The ends' one-corner states (`201`/`203`/`205`–`207`, `301`/`303`/`305`–`307`) are unmeasured
+and not written: an end whose closed-side corner is dry keeps its family's end model.
+
+Checked against `save-ref-1wide`: T34,23 is `Fall300` with back `0111` and base `0111`, T37,23 is
+`Fall200` with `1110`/`1110`, and both match the matrix exactly. That also fixes the sub-cell order:
+sub-cell 0 is the west side for a south drop (angle 0). The 13-tile build in
+`docs/local/fall-corner-probes.md` (fork-only) then confirmed all six one-corner middles in one
+dump; every column matched its predicted model.
 
 
 ### Rules that keep a save loadable
@@ -450,6 +525,9 @@ the map editor warns on load, names the value in the Terrain panel, and keeps sh
   refused. Single tiles, 2×1 strips, 1-wide ridges and 2×2-or-larger areas all work.
 - A one-tile fall that drops into a multi-tile pool can sit over a 4-water-side/2-land-diagonal
   river junction. The generator fills it as `River6A`/`River6B`, both measured in game.
+- A fall's model comes from both edge masks, so a lip or base that meets land on a diagonal gets the
+  catalogue's model. The middle cross terms (`409`–`420`, `423`) and the ends' one-corner states are
+  catalogue-only, not separately dumped; see **Fall model catalogue**.
 - The generator writes the rounded `Cliff3B` style for every 2-adjacent-low corner unless the
   **Corners** choice is Sharp (`Cliff3C`).
 - **Corners** styles a path bend whose inside diagonal is empty with `2B` (rounded) or `2C` (sharp),
@@ -486,9 +564,8 @@ raise/lower including the 0–3 limit, rivers with banks, and recessed and conse
 that terrain and water could be painted on beach and sea (invisible in game, with no collision),
 that designs floated on water, and that a three-tile *path* L stayed square because the editor wrote
 `2C`. The game rewrote those path Ls to `2B` when it loaded the save and they render rounded, which
-is why the path painter now uses `2B`/`2C`. The template gate, the design gate and the top-bar brush
-deselection landed after the pass and have not been re-tested in game; the waterfall intersection
-under Open questions remains.
+is why the path painter now uses `2B`/`2C`. The waterfall models were fixed the next day (see
+below); the open seam turned out to be the editor's `Fall208`/`Fall422` at a flush cascade end.
 
 The 2026-11-25 pass painted 17 water shapes with the in-game water tool on a flat acre G6 and
 dumped the save back: four three-tile Ls (one per orientation), a T with no water-side corners, a T
@@ -498,22 +575,40 @@ with one, two adjacent and three water diagonals, a full 2×2-armed junction, op
 the 3×3 body as a 3×3 band. Every flat model in the river table above came out of those dumps; the
 L bends were `River2C` in all four orientations, and the old NW-corner void was the editor writing
 the 2×2 `River3B` for an L. The 3×3 band is a 3×3 square with two opposite corners dry: its four
-corner tiles are `River3C` and its centre is `River6A`. Loading editor-written junctions in game is
-the next check.
+corner tiles are `River3C` and its centre is `River6A`.
+
+The same day, editor-written L, T and plus junctions loaded in game (3.0.3) with no broken bank,
+corner or void, which closes the flat-water work. Rotated orientations were not loaded separately:
+`4A` was dumped at two angles, `6A` at two and `2C` in all four, and the other rotations follow the
+same side/corner mapping.
+
+The 2026-11-25 fall pass then built a two-level cake and a recessed pad on acre G5, loaded them in
+game, and dumped the result. The cake (4-wide falls on every side of both levels) gave every
+direction's cascade family and proved the flush ends are `Fall202`/`Fall302` with `Fall403` between,
+not the `Fall208`/`Fall422` the editor had been writing for a flush strip. The pad gave `Fall424`
+as the recessed middle and `Fall304`/`Fall204` for a dry-back fall into a river. A staggered upper
+strip gave `Fall422` next to a recessed end for a north drop as well. The pool added at the cake's
+foot showed a cascade over water is the plain `Fall200`/`Fall400`/`Fall300` family, and re-deriving
+every fall tile of the save matches all 81 of them, model and angle (`probe -- save check`).
+
+The 2026-11-28 pass built the 13-tile one-corner sheet from `docs/local/fall-corner-probes.md` on
+acre G8 and saved in game. Every tile matched its prediction, `300, 401, 403, 404, 403, 402, 405,
+408, 407, 408, 406, 400, 200` west to east, which confirms the mask reading, the sub-cell order and
+the six one-corner middle models. The generator now reads both masks; `probe check` re-derives all 55
+fall tiles of that build save and all 42 of `save/` with no mismatch.
 
 ## Open questions
 
-- The NW-corner void seen in game on 2026-11-24 (water north and west meeting dry land south and
-  east) was the L-bend rule: the editor wrote the 2×2 corner `River3B` where the dry inside corner
-  needs `River2C`. The table and painter now do that; an editor-written L loaded in game is the
-  check.
-- The other 2026-11-24 glitch remains: a cascade lower strip with a higher waterfall to the west,
-  dry land to the north, a same-height waterfall to the south and lower water to the east shows
-  grass where the west edge meets the higher fall. That is a fall model/shape issue, not a river
-  junction; it needs a waterfall pass.
-- `River6A` (four water sides with two opposite water diagonals) was measured on the second G6
-  dump. The `4A`/`5A`/`6A` *path* junction notches are still unmeasured; a crossing loses its
-  notch. Measuring them is the fix.
+- The middle cross terms (`409`–`420`, `423`, where both fall edges have a dry diagonal) come from
+  the catalogue's signature table, not a separate dump, and the ends' one-corner states
+  (`201`/`203`/`205`–`207`, `301`/`303`/`305`–`307`) are unmeasured. The six middle one-corner
+  states were confirmed on 2026-11-28 and are now generated; loading an editor-written cross term in
+  game would close the middle group.
+- No `2xx`/`3xx` model has a wet sub-cell on the strip's closed side, so an end tile whose pool or
+  river behind continues past the strip's end has no model in its own family. What the game writes
+  there is unknown; the probe layout avoids the case.
+- The `4A`/`5A`/`6A` *path* junction notches are still unmeasured; a crossing loses its notch.
+  Measuring them is the fix.
 - Unmeasured `Cliff2C`/`Cliff3A`/`Cliff4x`/`Cliff5A`/`Cliff6x` style variants.
 - Building sizes and door data are incomplete for some structures. The angle exemption for bridges
   and inclines is real data, but rotating one without rotating its river or cliff leaves a structure

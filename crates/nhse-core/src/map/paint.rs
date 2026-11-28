@@ -258,15 +258,26 @@ fn is_water(t: &TerrainTile) -> bool {
     is_river(t.model) || is_fall(t.model)
 }
 
+/// Middle fall models by `(base mask, back mask)`, both indexed
+/// `1111, 1110, 0111, 0110, 0000`. This is the game's catalogue, not a formula; see
+/// `docs/map-editor.md` → Fall model catalogue.
+const MIDDLE_FALLS: [[&str; 5]; 5] = [
+    ["Fall400", "Fall405", "Fall406", "Fall407", "Fall408"],
+    ["Fall401", "Fall414", "Fall413", "Fall415", "Fall416"],
+    ["Fall402", "Fall410", "Fall409", "Fall411", "Fall412"],
+    ["Fall404", "Fall418", "Fall417", "Fall419", "Fall420"],
+    ["Fall403", "Fall422", "Fall421", "Fall423", "Fall424"],
+];
+
 /// Fall models the autotiler manages. Any other fall model is a hand-set stamp and is left alone
-/// by later water strokes.
+/// by later water strokes. Every `Fall4xx` middle is in `MIDDLE_FALLS`.
 fn is_managed_fall(model: u16) -> bool {
     [
         "Fall100", "Fall101", "Fall102", "Fall103", "Fall200", "Fall202", "Fall204", "Fall208",
-        "Fall300", "Fall302", "Fall304", "Fall308", "Fall400", "Fall403", "Fall408", "Fall421",
-        "Fall422",
+        "Fall300", "Fall302", "Fall304", "Fall308",
     ]
     .iter()
+    .chain(MIDDLE_FALLS.iter().flatten())
     .any(|name| model == terrain_model(name))
 }
 
@@ -554,19 +565,20 @@ fn fall_run(
     run
 }
 
-/// What the game draws behind and under one fall tile. Every variant below was measured on a save
-/// where the player placed the falls; see `docs/map-editor.md`.
+/// What the game draws behind and under one fall tile. The four families come from two questions:
+/// is there water behind the tile (a river at the same level, or a fall one level up), and is
+/// there water at its base (a river, or the fall below in a cascade). Measured in game; see
+/// `docs/map-editor.md`.
 #[derive(Clone, Copy, PartialEq)]
 enum FallKind {
-    /// Water behind the fall: the plain `Fall2xx`/`Fall3xx`/`Fall4xx` strip. One-tile falls use
-    /// the measured `Fall100`–`Fall103` table, which also covers a dry back.
+    /// Water behind and water below: `Fall200`/`Fall300`/`Fall400`.
     Plain,
-    /// No water behind and no water below: the fall sits recessed in the cliff face.
+    /// Water behind, dry land below: `Fall202`/`Fall302`/`Fall403`.
+    OntoLand,
+    /// Dry behind, water or a lower fall below: `Fall204`/`Fall304`/`Fall408`.
+    IntoWater,
+    /// Dry behind and dry land below: `Fall208`/`Fall308`/`Fall424`.
     Recessed,
-    /// A fall landing on the fall of the tier below.
-    CascadeTop,
-    /// A fall under the fall of the tier above, dropping onto dry land.
-    CascadeBottom,
 }
 
 fn fall_kind(
@@ -581,62 +593,87 @@ fn fall_kind(
     let (x, y) = (p.0 as i64, p.1 as i64);
     let back = tile(tiles, w, h, x - dx, y - dy);
     let base = tile(tiles, w, h, x + dx, y + dy);
-    let water_behind = back.is_some_and(|t| is_water(t) && t.elevation == e);
-    let water_above = back.is_some_and(|t| is_water(t) && t.elevation == e + 1);
-    let base_water = base.is_some_and(is_water);
-    if base.is_some_and(|t| is_fall(t.model)) && !water_behind {
-        FallKind::CascadeTop
-    } else if !base_water && water_above {
-        FallKind::CascadeBottom
-    } else if !base_water && !water_behind {
-        FallKind::Recessed
-    } else {
-        FallKind::Plain
+    let water_behind = back.is_some_and(|t| is_water(t) && t.elevation >= e);
+    let water_below = base.is_some_and(is_water);
+    match (water_behind, water_below) {
+        (true, true) => FallKind::Plain,
+        (true, false) => FallKind::OntoLand,
+        (false, true) => FallKind::IntoWater,
+        (false, false) => FallKind::Recessed,
     }
 }
 
-/// The plain strip: `Fall200` at the counter-clockwise end, `Fall300` at the clockwise end,
-/// `Fall400` in the middle.
-fn plain_fall(n: usize, from_ccw: usize) -> u16 {
-    if from_ccw == 0 {
-        terrain_model("Fall200")
-    } else if from_ccw + 1 == n {
-        terrain_model("Fall300")
-    } else {
-        terrain_model("Fall400")
-    }
+/// The plain strip's end: `Fall200` on the counter-clockwise side, `Fall300` on the other.
+fn plain_fall(from_ccw: usize) -> u16 {
+    terrain_model(if from_ccw == 0 { "Fall200" } else { "Fall300" })
 }
 
-/// Measured model for one tile of a fall strip. `from_ccw` counts from the strip end 90 degrees
-/// counter-clockwise of the drop. Contexts the sample save never showed fall back to the plain
-/// strip, which is verified in game.
-fn fall_model(kind: FallKind, n: usize, from_ccw: usize, angle: u16) -> u16 {
-    let (ccw_end, cw_end) = (from_ccw == 0, from_ccw + 1 == n);
+/// Measured model for a strip end. `from_ccw` counts from the strip end 90 degrees
+/// counter-clockwise of the drop. A middle tile uses its own edge masks, `MIDDLE_FALLS`.
+fn fall_end_model(kind: FallKind, from_ccw: usize) -> u16 {
+    let ccw_end = from_ccw == 0;
     match kind {
-        FallKind::Recessed => match (ccw_end, cw_end) {
-            (true, _) => terrain_model("Fall208"),
-            (_, true) => terrain_model("Fall308"),
-            _ => terrain_model("Fall400"),
-        },
-        FallKind::CascadeTop => match (ccw_end, cw_end) {
-            (true, _) => terrain_model("Fall204"),
-            (_, true) => terrain_model("Fall304"),
-            _ => terrain_model("Fall408"),
-        },
-        // Measured for east and west drops only; a north or south drop keeps the plain strip.
-        FallKind::CascadeBottom => match (angle & 3, from_ccw, n) {
-            (1, 0, _) => terrain_model("Fall208"),
-            (3, i, n) if i + 1 == n => terrain_model("Fall308"),
-            (1, i, n) if i + 1 == n => terrain_model("Fall302"),
-            (3, 0, _) => terrain_model("Fall202"),
-            (1, 1, _) => terrain_model("Fall422"),
-            // 421 is the second tile from the north end of a westward strip, which is the end
-            // nearest the clockwise side.
-            (3, i, n) if i + 2 == n => terrain_model("Fall421"),
-            (1 | 3, ..) => terrain_model("Fall403"),
-            _ => plain_fall(n, from_ccw),
-        },
-        FallKind::Plain => plain_fall(n, from_ccw),
+        FallKind::Recessed => terrain_model(if ccw_end { "Fall208" } else { "Fall308" }),
+        FallKind::IntoWater => terrain_model(if ccw_end { "Fall204" } else { "Fall304" }),
+        FallKind::OntoLand => terrain_model(if ccw_end { "Fall202" } else { "Fall302" }),
+        FallKind::Plain => plain_fall(from_ccw),
+    }
+}
+
+/// The back (lip) and base edge masks of one fall tile, in sub-cell order
+/// `[W corner, W mid, E mid, E corner]`; a dry own column forces `0000`. The mask reading and the
+/// sub-cell order are measured in game; see `docs/map-editor.md` → Fall model catalogue.
+fn fall_masks(
+    tiles: &[TerrainTile],
+    w: usize,
+    h: usize,
+    p: (usize, usize),
+    angle: u16,
+    e: u16,
+) -> (u8, u8) {
+    let (dx, dy) = drop_vector(angle);
+    let (x, y) = (p.0 as i64, p.1 as i64);
+    // Corner sub-cells in `[W, E]` order, back edge then base edge; the order rotates with the
+    // drop. For angle 0 the back corners are NW/NE and the base corners SW/SE.
+    let (back_corners, base_corners) = match angle & 3 {
+        0 => ([(-1, -1), (1, -1)], [(-1, 1), (1, 1)]),
+        1 => ([(-1, 1), (-1, -1)], [(1, 1), (1, -1)]),
+        2 => ([(1, 1), (-1, 1)], [(1, -1), (-1, -1)]),
+        _ => ([(1, -1), (1, 1)], [(-1, -1), (-1, 1)]),
+    };
+    let wet = |ox: i64, oy: i64, back: bool| {
+        tile(tiles, w, h, x + ox, y + oy).is_some_and(|t| {
+            is_water(t)
+                && if back {
+                    t.elevation >= e
+                } else {
+                    t.elevation < e
+                }
+        })
+    };
+    let mask = |own: (i64, i64), corners: [(i64, i64); 2], back: bool| {
+        if !wet(own.0, own.1, back) {
+            return 0;
+        }
+        0b0110
+            | ((wet(corners[0].0, corners[0].1, back) as u8) << 3)
+            | wet(corners[1].0, corners[1].1, back) as u8
+    };
+    (
+        mask((-dx, -dy), back_corners, true),
+        mask((dx, dy), base_corners, false),
+    )
+}
+
+/// Index of a 4-bit edge mask in the catalogue's five states.
+fn mask_index(mask: u8) -> usize {
+    match mask {
+        0b1111 => 0,
+        0b1110 => 1,
+        0b0111 => 2,
+        0b0110 => 3,
+        0b0000 => 4,
+        _ => unreachable!("both middle bits are the own column"),
     }
 }
 
@@ -681,9 +718,12 @@ fn assign_fall_run(
                 (false, true) => terrain_model("Fall102"),
                 (false, false) => terrain_model("Fall103"),
             }
+        } else if from_ccw == 0 || from_ccw + 1 == n {
+            fall_end_model(fall_kind(tiles, w, h, p, angle, elevation), from_ccw)
         } else {
-            let kind = fall_kind(tiles, w, h, p, angle, elevation);
-            fall_model(kind, n, from_ccw, angle)
+            // A middle tile's model is the catalogue entry for its two edge masks.
+            let (back, base) = fall_masks(tiles, w, h, p, angle, elevation);
+            terrain_model(MIDDLE_FALLS[mask_index(base)][mask_index(back)])
         };
         changed += set_fall(tiles, h, p, model, angle, elevation) as usize;
     }
@@ -1444,6 +1484,8 @@ mod tests {
         );
     }
 
+    /// A flush east cascade: the higher fall reaches every tile of the lower strip.
+    /// Measured on the G5 cake (2026-11-25).
     #[test]
     fn an_east_cascade_uses_the_measured_models() {
         let (w, h) = (6, 8);
@@ -1465,14 +1507,155 @@ mod tests {
         assert_eq!(at(2, 2).model, terrain_model("Fall204"), "north end");
         assert_eq!(at(2, 3).model, terrain_model("Fall408"), "middle");
         assert_eq!(at(2, 5).model, terrain_model("Fall304"), "south end");
-        // lower strip: a fall above it, dropping onto land
-        assert_eq!(at(3, 2).model, terrain_model("Fall208"), "north end");
-        assert_eq!(at(3, 3).model, terrain_model("Fall422"), "2nd from north");
+        // lower strip: the higher fall is behind every tile, so 202/302 with no blend tiles
+        assert_eq!(at(3, 2).model, terrain_model("Fall202"), "north end");
+        assert_eq!(at(3, 3).model, terrain_model("Fall403"), "second tile");
         assert_eq!(at(3, 4).model, terrain_model("Fall403"), "middle");
         assert_eq!(at(3, 5).model, terrain_model("Fall302"), "south end");
         for (x, y) in lower.iter().chain(top.iter()) {
             assert_eq!(at(*x, *y).angle, 1, "drops east at {x},{y}");
         }
+    }
+
+    /// The old gorge shape: the higher fall starts one tile later, so the north end of the lower
+    /// strip sits under dry tier. Measured on the sample save's gorge (2026-11-23).
+    #[test]
+    fn a_staggered_cascade_uses_the_blend_tiles() {
+        let (w, h) = (6, 8);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let terrace: Vec<(usize, usize)> =
+            (0..=3).flat_map(|x| (0..=7).map(move |y| (x, y))).collect();
+        let upper: Vec<(usize, usize)> =
+            (1..=2).flat_map(|x| (1..=6).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &terrace, 1).unwrap();
+        paint(&mut tiles, w, h, &upper, 1).unwrap();
+        let lower: Vec<(usize, usize)> = (2..=5).map(|y| (3, y)).collect();
+        let top: Vec<(usize, usize)> = (3..=5).map(|y| (2, y)).collect();
+        paint_water(&mut tiles, w, h, &lower, true, false).unwrap();
+        paint_water(&mut tiles, w, h, &top, true, false).unwrap();
+        let at = |x: usize, y: usize| tiles[x * h + y];
+        // the north end is recessed (208) and the tile inside it is the blend model
+        assert_eq!(at(3, 2).model, terrain_model("Fall208"), "north end");
+        assert_eq!(at(3, 3).model, terrain_model("Fall422"), "blend");
+        assert_eq!(at(3, 4).model, terrain_model("Fall403"), "middle");
+        assert_eq!(at(3, 5).model, terrain_model("Fall302"), "south end");
+        assert_eq!(at(2, 3).model, terrain_model("Fall204"), "upper north end");
+        assert_eq!(at(2, 4).model, terrain_model("Fall408"), "upper middle");
+        assert_eq!(at(2, 5).model, terrain_model("Fall304"), "upper south end");
+    }
+
+    /// A north drop uses the same family models; measured on the G5 cake's north side.
+    #[test]
+    fn a_north_cascade_uses_the_same_models() {
+        let (w, h) = (8, 9);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        // terrace x0..7 y1..8 at e1, tier x1..6 y2..7 at e2; the strips are inset from the
+        // tier's corners so every painted tile is a single-sided cliff face
+        let terrace: Vec<(usize, usize)> =
+            (0..=7).flat_map(|x| (1..=8).map(move |y| (x, y))).collect();
+        let upper: Vec<(usize, usize)> =
+            (1..=6).flat_map(|x| (2..=7).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &terrace, 1).unwrap();
+        paint(&mut tiles, w, h, &upper, 1).unwrap();
+        let lower: Vec<(usize, usize)> = (2..=5).map(|x| (x, 1)).collect();
+        let top: Vec<(usize, usize)> = (2..=5).map(|x| (x, 2)).collect();
+        paint_water(&mut tiles, w, h, &lower, true, false).unwrap();
+        paint_water(&mut tiles, w, h, &top, true, false).unwrap();
+        let at = |x: usize, y: usize| tiles[x * h + y];
+        // ccw from a north drop is west: 202 there, 302 at the east end
+        assert_eq!(at(2, 1).model, terrain_model("Fall202"), "west end");
+        assert_eq!(at(3, 1).model, terrain_model("Fall403"));
+        assert_eq!(at(4, 1).model, terrain_model("Fall403"));
+        assert_eq!(at(5, 1).model, terrain_model("Fall302"), "east end");
+        assert_eq!(at(2, 2).model, terrain_model("Fall204"), "upper west end");
+        assert_eq!(at(5, 2).model, terrain_model("Fall304"), "upper east end");
+        for x in 2..=5 {
+            assert_eq!(at(x, 1).angle, 2, "drops north");
+        }
+    }
+
+    /// A four-tile recessed strip has a measured middle model. Measured on the G5 pad.
+    #[test]
+    fn a_recessed_strip_uses_the_measured_middle() {
+        let (w, h) = (4, 4);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let top: Vec<(usize, usize)> = (0..w).flat_map(|x| [(x, 0), (x, 1)]).collect();
+        paint(&mut tiles, w, h, &top, 1).unwrap();
+        let targets: Vec<(usize, usize)> = (0..w).map(|x| (x, 1)).collect();
+        let (_, falls, warnings) = paint_water(&mut tiles, w, h, &targets, true, false).unwrap();
+        assert_eq!((falls, warnings), (4, 0));
+        // ccw from a south drop is east, so 208 sits at the east end
+        let row: Vec<u16> = (0..w).map(|x| tiles[x * h + 1].model).collect();
+        assert_eq!(
+            row,
+            vec![
+                terrain_model("Fall308"),
+                terrain_model("Fall424"),
+                terrain_model("Fall424"),
+                terrain_model("Fall208"),
+            ]
+        );
+    }
+
+    /// A cascade bottom with water at its base is the plain family. Measured on the G5 cake's
+    /// east side after the pool was added (the 2026-11-24 seam context).
+    #[test]
+    fn a_cascade_into_water_uses_the_plain_strip() {
+        let (w, h) = (8, 9);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let terrace: Vec<(usize, usize)> =
+            (0..=7).flat_map(|x| (1..=8).map(move |y| (x, y))).collect();
+        let upper: Vec<(usize, usize)> =
+            (1..=6).flat_map(|x| (2..=7).map(move |y| (x, y))).collect();
+        paint(&mut tiles, w, h, &terrace, 1).unwrap();
+        paint(&mut tiles, w, h, &upper, 1).unwrap();
+        let lower: Vec<(usize, usize)> = (2..=5).map(|x| (x, 1)).collect();
+        let top: Vec<(usize, usize)> = (2..=5).map(|x| (x, 2)).collect();
+        paint_water(&mut tiles, w, h, &lower, true, false).unwrap();
+        paint_water(&mut tiles, w, h, &top, true, false).unwrap();
+        // a pool at the foot of the lower strip wins over the higher fall behind it
+        let pool: Vec<(usize, usize)> = (2..=5).map(|x| (x, 0)).collect();
+        paint_water(&mut tiles, w, h, &pool, true, false).unwrap();
+        let at = |x: usize, y: usize| tiles[x * h + y];
+        assert_eq!(at(2, 1).model, terrain_model("Fall200"), "west end");
+        assert_eq!(at(3, 1).model, terrain_model("Fall400"));
+        assert_eq!(at(4, 1).model, terrain_model("Fall400"));
+        assert_eq!(at(5, 1).model, terrain_model("Fall300"), "east end");
+    }
+
+    /// The 13-tile build sheet from `docs/local/fall-corner-probes.md`, dumped from game on
+    /// 2026-11-28. All 13 predicted models matched, so a middle reads both edge masks.
+    #[test]
+    fn fall_middles_read_the_measured_edge_masks() {
+        let (w, h) = (19, 12);
+        let mut tiles = vec![TerrainTile::default(); w * h];
+        let plateau: Vec<(usize, usize)> = (2..=16)
+            .flat_map(|x| (6..=8).map(move |y| (x, y)))
+            .collect();
+        paint(&mut tiles, w, h, &plateau, 1).unwrap();
+        let inland: Vec<(usize, usize)> = [3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15]
+            .into_iter()
+            .map(|x| (x, 7))
+            .collect();
+        paint_water(&mut tiles, w, h, &inland, true, false).unwrap();
+        let falls: Vec<(usize, usize)> = (3..=15).map(|x| (x, 8)).collect();
+        paint_water(&mut tiles, w, h, &falls, true, false).unwrap();
+        let pool: Vec<(usize, usize)> = [3, 4, 6, 8, 9, 10, 11, 12, 13, 14, 15]
+            .into_iter()
+            .map(|x| (x, 9))
+            .collect();
+        paint_water(&mut tiles, w, h, &pool, true, false).unwrap();
+        let row: Vec<u16> = (3..=15).map(|x| tiles[x * h + 8].model).collect();
+        assert_eq!(
+            row,
+            [
+                "Fall300", "Fall401", "Fall403", "Fall404", "Fall403", "Fall402", "Fall405",
+                "Fall408", "Fall407", "Fall408", "Fall406", "Fall400", "Fall200",
+            ]
+            .into_iter()
+            .map(terrain_model)
+            .collect::<Vec<_>>()
+        );
     }
 
     #[test]
